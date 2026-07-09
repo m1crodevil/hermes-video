@@ -64,7 +64,20 @@ def main() -> int:
         "--no-dedup",
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
-             "frames (static screen recordings, held slides) instead of collapsing them.",
+            "frames (static screen recordings, held slides) instead of collapsing them.",
+    )
+    ap.add_argument(
+        "--engine",
+        choices=["claude", "opencode"],
+        default=None,
+        help="AI engine: claude (default, prints markdown report for Read tool) "
+             "or opencode (MiMo V2.5 via OpenCode Zen API — sends frames + transcript directly)",
+    )
+    ap.add_argument(
+        "--question",
+        type=str,
+        default=None,
+        help="Question to ask about the video (required for opencode engine)",
     )
     args = ap.parse_args()
 
@@ -265,7 +278,93 @@ def main() -> int:
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
+    # -----------------------------------------------------------------------
+    # Engine dispatch: opencode sends frames+transcript to MiMo V2.5 API
+    # -----------------------------------------------------------------------
+    engine = args.engine or "claude"
     info = dl.get("info") or {}
+
+    if engine == "opencode":
+        from opencode_client import OpenCodeClient
+        from config import get_opencode_config
+
+        oc_config = get_opencode_config()
+        api_key = oc_config.get("api_key")
+        if not api_key:
+            print("[watch] --engine opencode requires OPENCODE_API_KEY (env or ~/.config/watch/.env)", file=sys.stderr)
+            return 1
+
+        model = oc_config.get("model") or "mimo-v2.5-free"
+        client = OpenCodeClient(api_key=api_key, model=model)
+        print(f"[watch] using opencode engine (model={model})", file=sys.stderr)
+
+        # Build the question
+        question = args.question
+        if not question:
+            question = (
+                "Analyze this video. Describe what is happening, key events, "
+                "and any notable details visible in the frames and transcript."
+            )
+            print("[watch] no --question provided, using default analysis prompt", file=sys.stderr)
+
+        # Collect transcript text for the prompt
+        transcript_for_prompt = transcript_text or "(no transcript available)"
+
+        # Load frames as base64
+        import base64
+        b64_frames: list[str] = []
+        for frame in frames:
+            frame_path = Path(frame["path"])
+            if frame_path.exists():
+                b64_frames.append(base64.b64encode(frame_path.read_bytes()).decode("ascii"))
+
+        if not b64_frames:
+            print("[watch] no frames to send — falling back to text-only analysis", file=sys.stderr)
+
+        # Build the analysis prompt
+        prompt_parts = [f"Question: {question}"]
+        prompt_parts.append(f"\nTranscript:\n{transcript_for_prompt}")
+        if b64_frames:
+            prompt_parts.append(f"\n[Video contains {len(b64_frames)} frames extracted at various timestamps]")
+        full_prompt = "\n".join(prompt_parts)
+
+        # Build message (multiframe if we have frames, text-only otherwise)
+        if b64_frames:
+            user_msg = client.create_multiframe_message(b64_frames, full_prompt)
+        else:
+            user_msg = {"role": "user", "content": full_prompt}
+
+        messages = [
+            {"role": "system", "content": "You are a video analysis assistant. Analyze the provided video frames and transcript to answer the user's question. Be thorough and specific about what you observe."},
+            user_msg,
+        ]
+
+        try:
+            response = client.chat_completion(messages, max_tokens=8192)
+            answer = response["choices"][0]["message"]["content"]
+        except Exception as exc:
+            print(f"[watch] OpenCode API error: {exc}", file=sys.stderr)
+            return 1
+
+        # Print the result
+        print()
+        print("# Video Analysis (MiMo V2.5)")
+        print()
+        print(f"- **Source:** {args.source}")
+        if info.get("title"):
+            print(f"- **Title:** {info['title']}")
+        print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
+        print(f"- **Engine:** opencode ({model})")
+        print(f"- **Frames sent:** {len(b64_frames)}")
+        print(f"- **Question:** {question}")
+        print()
+        print("---")
+        print()
+        print(answer)
+        print()
+        print("---")
+        print(f"_Work dir: `{work}` — delete when done._")
+        return 0
 
     print()
     print("# watch: video report")
