@@ -112,7 +112,7 @@ def main() -> int:
         dl = fetch_captions(args.source, work / "download")
         if dl.subtitle_path:
             try:
-                transcript_segments = parse_vtt(dl["subtitle_path"])
+                transcript_segments = parse_vtt(dl.subtitle_path)
                 transcript_text = format_transcript(transcript_segments)
                 transcript_source = "captions"
             except Exception as exc:
@@ -139,7 +139,7 @@ def main() -> int:
         else:
             print("[watch] using local file…", file=sys.stderr)
             dl = download(args.source, work / "download")
-        video_path = dl["video_path"]
+        video_path = dl.video_path
 
     meta = get_metadata(video_path) if video_path else {
         "duration_seconds": float((dl.info or {}).get("duration") or 0),
@@ -242,7 +242,7 @@ def main() -> int:
 
     if not transcript_segments and dl.subtitle_path:
         try:
-            all_segments = parse_vtt(dl["subtitle_path"])
+            all_segments = parse_vtt(dl.subtitle_path)
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
             transcript_text = format_transcript(transcript_segments)
             transcript_source = "captions"
