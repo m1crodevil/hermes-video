@@ -198,7 +198,7 @@ def main() -> int:
             start_seconds=start_sec,
             end_seconds=end_sec,
         )
-        if cue_meta.get("dropped_out_of_window"):
+        if cue_meta.dropped_out_of_window:
             print(
                 f"[watch] {cue_meta.dropped_out_of_window} cue timestamp(s) outside the "
                 "focus range — dropped",
@@ -249,7 +249,7 @@ def main() -> int:
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
+    if not transcript_segments and not args.no_whisper and video_path and meta.has_audio:
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
             try:
@@ -275,7 +275,7 @@ def main() -> int:
                 f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
                 file=sys.stderr,
             )
-    elif not transcript_segments and video_path and not meta.get("has_audio"):
+    elif not transcript_segments and video_path and not meta.has_audio:
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
     # -----------------------------------------------------------------------
@@ -380,25 +380,25 @@ def main() -> int:
             f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
             f"({effective_duration:.1f}s)"
         )
-    if meta.get("width") and meta.get("height"):
+    if meta.width and meta.height:
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.codec or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
-    detail_count = frame_meta.get("selected_count", 0)
+    detail_count = frame_meta.selected_count
     if detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
-        engine = frame_meta.get("engine", "scene")
-        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
-        deduped = frame_meta.get("deduped_count", 0)
+        engine = frame_meta.engine
+        fallback = " with uniform fallback" if frame_meta.fallback else ""
+        deduped = frame_meta.deduped_count
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(
-            f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
+            f"- **Frames:** {detail_count} selected from {frame_meta.candidate_count} "
             f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
         )
     elif not cue_frames:
         print("- **Frames:** skipped (transcript detail)")
     if cue_frames:
-        dropped = cue_meta.get("dropped_out_of_window", 0)
+        dropped = cue_meta.dropped_out_of_window
         drop_note = f", {dropped} dropped outside range" if dropped else ""
         print(
             f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
