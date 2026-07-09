@@ -445,8 +445,8 @@ def main() -> int:
         print()
         for frame in frames:
             print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
+                f"- `{frame.path}` "
+                f"(t={format_time(frame.timestamp_seconds)}, reason={frame.reason})"
             )
     else:
         print("_No frames extracted._")
