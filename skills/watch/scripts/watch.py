@@ -148,7 +148,7 @@ def main() -> int:
         "codec": None,
         "has_audio": False,
     }
-    full_duration = meta["duration_seconds"]
+    full_duration = meta.duration_seconds
 
     start_sec = parse_time(args.start)
     end_sec = parse_time(args.end)
@@ -200,7 +200,7 @@ def main() -> int:
         )
         if cue_meta.get("dropped_out_of_window"):
             print(
-                f"[watch] {cue_meta['dropped_out_of_window']} cue timestamp(s) outside the "
+                f"[watch] {cue_meta.dropped_out_of_window} cue timestamp(s) outside the "
                 "focus range — dropped",
                 file=sys.stderr,
             )
@@ -381,7 +381,7 @@ def main() -> int:
             f"({effective_duration:.1f}s)"
         )
     if meta.get("width") and meta.get("height"):
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
+        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.codec or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
