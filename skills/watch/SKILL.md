@@ -1,19 +1,30 @@
 ---
 name: watch
-version: "0.2.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
+version: "1.0.0"
+description: "Analyze videos using MiMo V2.5 via OpenCode Zen. Downloads, extracts frames, transcribes, and analyzes video content."
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/bradautomates/claude-video
-repository: https://github.com/bradautomates/claude-video
-author: bradautomates
+homepage: https://github.com/m1crodevil/hermes-video
+repository: https://github.com/m1crodevil/hermes-video
+author: m1crodevil
 license: MIT
 user-invocable: true
+platforms: [macos, linux]
+metadata:
+  hermes:
+    tags: [video, analysis, mimo, multimodal]
+    category: content-creation
+    requires_toolsets: [terminal]
+    config:
+      - key: hermes-video.default_detail
+        description: "Default detail mode for video analysis"
+        default: "balanced"
+        prompt: "Default detail mode (transcript|efficient|balanced|token-burner)"
 ---
 
 # /watch
 
-You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
@@ -245,6 +256,77 @@ This skill burns tokens primarily on frames. Order of magnitude:
 - Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
 
 If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
+
+## Pitfalls
+
+### MiMo Model Variants (CRITICAL)
+
+**Not all MiMo models support vision!** Distinct variants with different capabilities:
+
+| Model | Type | Vision Support | Use Case |
+|-------|------|----------------|----------|
+| **mimo-v2.5** | Omnimodal | ✅ **YES** (image/video/audio) | Visual analysis, multimodal tasks |
+| **mimo-v2.5-pro** | Text-only | ❌ NO | Text generation, reasoning |
+| **mimo-v2.5-free** | Omnimodal | ✅ **YES** (free tier) | Visual analysis (cost-effective) |
+
+**Source**: [GitHub Issue #18884](https://github.com/NousResearch/hermes-agent/issues/18884) — "mimo-2.5-pro is text-only. The actual omnimodal model is mimo-2.5"
+
+**User's current setup**: OpenCode Zen + `mimo-v2.5-free` = **SUPPORTS VISION** ✅
+
+**Pitfall**: If you accidentally use `mimo-v2.5-pro` for visual analysis, images will be silently dropped and you'll get text-only responses without any visual understanding.
+
+### AV1 Codec — MiMo CANNOT Process It
+
+YouTube defaults to AV1 codec at 360p. MiMo/Xiaomi does **NOT** support AV1. Downloading AV1 will cause "Multimodal data is corrupted" error.
+
+**FIX**: Always download as H.264 (avc1):
+```bash
+# Check available formats first
+yt-dlp -F <url>
+
+# Download H.264 360p + AAC audio
+yt-dlp -f "134+140" --merge-output-format mp4 -o "video.mp4" <url>
+```
+
+### Base64 Size Limit (~30-40MB per request)
+
+MiMo/OpenCode Zen API accepts video as base64 in JSON. Base64 adds ~33% overhead. Cloudflare 413 error at ~222MB.
+
+**FIX**: Chunk long videos:
+- 360p 6-min chunk ≈ 17MB → base64 ≈ 23MB ✅
+- 360p 10-min chunk ≈ 28MB → base64 ≈ 37MB ⚠️ (borderline)
+- Keep chunks ≤ 6 minutes for safety.
+
+### Trimming Pitfall
+
+**NEVER use mcp-video for trimming** — it re-encodes (slow, 5-10x larger files).
+
+**ALWAYS use ffmpeg stream copy:**
+```bash
+# ❌ WRONG — re-encodes, slow, large files
+mcp-video trim source.mp4 -s 10:03 -e 10:38 -o clip.mp4
+
+# ✅ CORRECT — stream copy, instant, same quality
+ffmpeg -ss 00:10:03 -to 00:10:38 -i source.mp4 -c copy -avoid_negative_ts make_zero clip.mp4
+```
+
+### Visual vs Transcript Analysis Pitfall
+
+**CRITICAL**: Visual analysis gives DIFFERENT moments than transcript analysis.
+- **Transcript**: dialogue-driven (hot takes, emotional quotes, educational content)
+- **Visual**: action-driven (dramatic reactions, physical comedy, hype celebrations)
+- They rarely overlap. User explicitly prefers visual: "yang terpenting kan analisa video, bukan srt nya."
+- **For best results**: run BOTH analyses and merge, but weight visual moments higher.
+
+## Verification
+
+After running `/watch`, verify:
+1. **Frames exist**: Check that the script printed frame paths and they are readable JPEGs.
+2. **Transcript available**: Confirm the report header shows `captions` or `whisper (groq/openai)`.
+3. **Detail mode applied**: Verify frame count matches the expected cap for the chosen detail mode.
+4. **Timestamps align**: Cross-check a few frame timestamps against the transcript to ensure synchronization.
+
+If any verification fails, check the failure modes section above and re-run with adjusted flags.
 
 ## Security & Permissions
 
