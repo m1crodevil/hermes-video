@@ -1,0 +1,23 @@
+{
+  "name": "hermes-video",
+  "version": "1.0.0",
+  "description": "Video analysis for Hermes Agent powered by MiMo V2.5",
+  "author": "m1crodevil",
+  "license": "MIT",
+  "homepage": "https://github.com/m1crodevil/hermes-video",
+  "repository": "https://github.com/m1crodevil/hermes-video",
+  "keywords": ["video", "analysis", "mimo", "multimodal", "hermes"],
+  "hermes": {
+    "min_version": "0.8.0",
+    "skills": ["watch"],
+    "dependencies": ["ffmpeg", "yt-dlp"],
+    "optional_dependencies": ["groq", "openai"]
+  },
+  "files": [
+    "skills/watch/SKILL.md",
+    "skills/watch/scripts/*.py",
+    "skills/watch/references/*.md",
+    "skills/watch/templates/*",
+    "skills/watch/assets/*"
+  ]
+}
