@@ -166,7 +166,7 @@ def get_opencode_config() -> dict[str, str | None]:
         >>> if cfg["api_key"]:
         ...     print("OpenCode is configured")
     """
-    api_key = get_api_key("OPENCODE_API_KEY")
+    api_key = get_api_key("OPENCODE_ZEN_API_KEY")
     model = get_env("OPENCODE_MODEL")
     return {"api_key": api_key, "model": model}
 
