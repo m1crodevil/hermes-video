@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-
+from typing import Any
+from .types import TranscriptSegment, Seconds
 
 TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
@@ -17,15 +18,15 @@ TS_RE = re.compile(
 TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
+def _to_seconds(h: str, m: str, s: str, ms: str) -> Seconds:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
-def parse_vtt(path: str) -> list[dict]:
+def parse_vtt(path: str) -> list[dict[str, Any]]:
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
-    segments: list[dict] = []
+    segments: list[dict[str, Any]] = []
     i = 0
     while i < len(lines):
         match = TS_RE.match(lines[i])
@@ -52,9 +53,9 @@ def parse_vtt(path: str) -> list[dict]:
     return _dedupe(segments)
 
 
-def _dedupe(segments: list[dict]) -> list[dict]:
+def _dedupe(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse rolling duplicates common in YouTube auto-subs."""
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for seg in segments:
         if out and seg["text"] == out[-1]["text"]:
             out[-1]["end"] = seg["end"]
@@ -68,10 +69,10 @@ def _dedupe(segments: list[dict]) -> list[dict]:
 
 
 def filter_range(
-    segments: list[dict],
-    start_seconds: float | None,
-    end_seconds: float | None,
-) -> list[dict]:
+    segments: list[dict[str, Any]],
+    start_seconds: Seconds | None,
+    end_seconds: Seconds | None,
+) -> list[dict[str, Any]]:
     """Return segments whose time range overlaps [start, end]."""
     if start_seconds is None and end_seconds is None:
         return segments
@@ -80,7 +81,7 @@ def filter_range(
     return [seg for seg in segments if seg["end"] >= lo and seg["start"] <= hi]
 
 
-def format_transcript(segments: list[dict]) -> str:
+def format_transcript(segments: list[dict[str, Any]]) -> str:
     lines = []
     for seg in segments:
         start = int(seg["start"])
