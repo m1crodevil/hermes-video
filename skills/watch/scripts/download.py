@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .errors import DownloadError
+from .types import DownloadResult
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
@@ -24,21 +26,21 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
-def resolve_local(path: str) -> dict:
+def resolve_local(path: str) -> DownloadResult:
     p = Path(path).expanduser().resolve()
     if not p.exists():
-        raise SystemExit(f"File not found: {p}")
+        raise DownloadError(f"File not found: {p}", source=str(p))
     if p.suffix.lower() not in VIDEO_EXTS:
         print(
             f"[watch] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
         )
-    return {
-        "video_path": str(p),
-        "subtitle_path": None,
-        "info": {"title": p.name, "url": str(p)},
-        "downloaded": False,
-    }
+    return DownloadResult(
+        video_path=str(p),
+        subtitle_path=None,
+        info={"title": p.name, "url": str(p)},
+        downloaded=False,
+    )
 
 
 def _pick_subtitle(out_dir: Path) -> Path | None:
@@ -62,10 +64,21 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def fetch_captions(url: str, out_dir: Path) -> dict:
-    """Fetch metadata and best available VTT captions without downloading video."""
+def fetch_captions(url: str, out_dir: Path) -> DownloadResult:
+    """Fetch metadata and best available VTT captions without downloading video.
+
+    Args:
+        url: Video URL to fetch captions for
+        out_dir: Output directory for subtitle files
+
+    Returns:
+        DownloadResult with subtitle_path and info populated
+    """
     if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+        raise DownloadError(
+            "yt-dlp is not installed — install with: brew install yt-dlp",
+            source=url,
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -87,15 +100,15 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
-    return {
-        "video_path": None,
-        "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
-        "downloaded": False,
-    }
+    return DownloadResult(
+        video_path=None,
+        subtitle_path=str(subtitle) if subtitle else None,
+        info=info or {"url": url},
+        downloaded=False,
+    )
 
 
-def _read_info(info_path: Path, url: str) -> dict:
+def _read_info(info_path: Path, url: str) -> dict[str, str]:
     info: dict = {}
     if info_path.exists():
         try:
@@ -116,9 +129,25 @@ def download_url(
     url: str,
     out_dir: Path,
     audio_only: bool = False,
-) -> dict:
+) -> DownloadResult:
+    """Download video via yt-dlp.
+
+    Args:
+        url: Video URL to download
+        out_dir: Output directory for video and metadata
+        audio_only: Download audio track only
+
+    Returns:
+        DownloadResult with video_path and metadata
+
+    Raises:
+        DownloadError: If yt-dlp fails or is not installed
+    """
     if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+        raise DownloadError(
+            "yt-dlp is not installed — install with: brew install yt-dlp",
+            source=url,
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -147,26 +176,38 @@ def download_url(
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
     if video is None:
-        raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+        raise DownloadError(
+            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})",
+            source=url,
+            return_code=result.returncode,
         )
 
     subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
 
-    return {
-        "video_path": str(video),
-        "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
-        "downloaded": True,
-    }
+    return DownloadResult(
+        video_path=str(video),
+        subtitle_path=str(subtitle) if subtitle else None,
+        info=info or {"url": url},
+        downloaded=True,
+    )
 
 
 def download(
     source: str,
     out_dir: Path,
     audio_only: bool = False,
-) -> dict:
+) -> DownloadResult:
+    """Download video or resolve local file path.
+
+    Args:
+        source: Video URL or local file path
+        out_dir: Output directory for downloaded files
+        audio_only: Download audio track only
+
+    Returns:
+        DownloadResult with paths and metadata
+    """
     if is_url(source):
         return download_url(source, out_dir, audio_only=audio_only)
     return resolve_local(source)
