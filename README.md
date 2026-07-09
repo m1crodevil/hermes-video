@@ -1,6 +1,9 @@
 # /watch
 
-**Give Claude the ability to watch any video.**
+**Give Claude the ability to watch any video** — now with **MiMo V2.5** support!
+
+> 🍴 Fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) with 
+> [Xiaomi MiMo V2.5](https://huggingface.co/XiaomiMiMo/MiMo-V2.5) integration via OpenCode Zen
 
 Claude Code (recommended — auto-updates via marketplace):
 ```

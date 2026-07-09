@@ -1,16 +1,38 @@
-# OS / editor / tooling
-.DS_Store
-.entire/
+# Environment files
+.env
+**/.env
+~/.config/watch/.env
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
 .venv/
-.coverage
-htmlcov/
-.idea/
+venv/
+
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
 
-# build artifact from scripts/build-skill.sh
-/dist/
+# OS
+.DS_Store
+Thumbs.db
 
-# local Claude Code settings
-.claude/settings.local.json
+# Temp
+/tmp/
+watch-*/
+*.tmp
+
+# API Keys (never commit!)
+**/credentials*
+**/secrets*
+**/*.key
+**/*.pem
+
+# Herms local plans (not for repo)
+.herms/
