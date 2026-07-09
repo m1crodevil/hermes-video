@@ -435,7 +435,7 @@ def extract_scene_candidates(
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
 
-    vf = f"select='eq(n\\\\,0)+gt(scene\\\\,{threshold})',{_scale_filter(resolution)},showinfo"
+    vf = f"select='eq(n\,0)+gt(scene\,{threshold})',{_scale_filter(resolution)},showinfo"
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
