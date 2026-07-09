@@ -1,12 +1,14 @@
 # hermes-video
 
-> 🎬 Video analysis for Hermes Agent powered by MiMo V2.5
+> 🎬 Video analysis skill for Hermes Agent powered by MiMo V2.5
 
 [![Hermes](https://img.shields.io/badge/Agent-Hermes-blue)](https://hermes-agent.nousresearch.com)
 [![MiMo](https://img.shields.io/badge/Model-MiMo_V2.5-green)](https://huggingface.co/XiaomiMiMo/MiMo-V2.5)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-218%20passing-brightgreen)](#testing)
 
-A Hermes skill for video analysis using Xiaomi's MiMo V2.5 multimodal model via OpenCode Zen. Analyzes videos frame-by-frame to find viral moments, engagement scoring, and TikTok clipping potential.
+A Hermes skill for video analysis using Xiaomi's MiMo V2.5 multimodal model via OpenCode Zen. Downloads videos, extracts frames, transcribes audio, and analyzes content using MiMo's vision capabilities.
 
 ## ✨ Features
 
@@ -14,246 +16,257 @@ A Hermes skill for video analysis using Xiaomi's MiMo V2.5 multimodal model via 
 - 💰 **$0 cost** — OpenCode Zen free tier
 - 🧠 **1M context window** — analyze long videos without splitting
 - 🔧 **Hermes native** — works as Hermes skill
-- 📦 **Zero dependencies** — stdlib Python only (optional: `openai`)
+- 📦 **Zero dependencies** — stdlib Python only
 - 🧠 **Memory integration** — saves analyses for future reference
 - ⏰ **Cron support** — schedule regular video analysis
-- 📊 **Structured output** — Zod-validated JSON with TypeScript
-- 🔍 **Keyframe extraction** — PySceneDetect for efficient visual analysis
-- 🎯 **SRT integration** — combines visual + dialogue analysis
+- 🎯 **Scene-aware frames** — smart frame extraction
+- 📝 **Transcript support** — captions or Whisper fallback
 
 ## 🚀 Installation
 
-### Hermes CLI (Recommended)
+### Option 1: Install Script (Recommended)
 
 ```bash
-# Install via Hermes
-hermes skill install video-analysis-mimo
-
-# Or clone directly
-git clone https://github.com/m1crodevil/claude-video.git ~/.hermes/skills/hermes-video
+git clone https://github.com/m1crodevil/hermes-video.git
+cd hermes-video
+./install.sh
 ```
 
-### Manual Installation
+### Option 2: Hermes CLI
 
 ```bash
-# Clone the repo
-git clone https://github.com/m1crodevil/claude-video.git
-cd claude-video
-
-# Install Python dependencies (optional, for OpenAI client)
-pip install openai
-
-# Install Node.js dependencies (for Zod validation)
-npm install
+hermes skill add m1crodevil/hermes-video
 ```
+
+### Option 3: Manual
+
+```bash
+git clone https://github.com/m1crodevil/hermes-video.git
+cd hermes-video
+mkdir -p ~/.hermes/skills/video/{scripts,references,templates,assets}
+cp skills/watch/SKILL.md ~/.hermes/skills/video/
+cp skills/watch/scripts/*.py ~/.hermes/skills/video/scripts/
+cp docs/*.md ~/.hermes/skills/video/references/
+cp .env.example ~/.hermes/skills/video/templates/
+```
+
+### Dependencies
+
+**Required:**
+- Python 3.11+
+- ffmpeg (for frame extraction)
+- yt-dlp (for video download)
+
+**Optional:**
+- Groq API key (for Whisper transcription)
+- OpenAI API key (alternative Whisper backend)
 
 ## ⚙️ Configuration
 
-### Environment Variables
-
-Set your OpenCode Zen API key:
+### 1. Set API Key
 
 ```bash
-# Option 1: Export in shell
-export OPENCODE_ZEN_API_KEY="your-api-key"
+# Option A: Environment variable
+export OPENCODE_API_KEY="your-api-key"
 
-# Option 2: Add to ~/.hermes/.env
-echo "OPENCODE_ZEN_API_KEY=your-api-key" >> ~/.hermes/.env
+# Option B: Config file
+mkdir -p ~/.config/watch
+cat > ~/.config/watch/.env << 'EOF'
+OPENCODE_API_KEY=your-api-key
+OPENCODE_MODEL=mimo-v2.5-free
+EOF
 ```
 
-### Hermes Config
+### 2. Optional: Whisper (for videos without captions)
 
-Add to `~/.hermes/config.yaml`:
+```bash
+# Get free Groq API key at https://console.groq.com/keys
+echo "GROQ_API_KEY=your-groq-key" >> ~/.config/watch/.env
+```
 
-```yaml
-skills:
-  - video-analysis-mimo
+### 3. Verify Setup
 
-env:
-  OPENCODE_ZEN_API_KEY: "your-api-key"
+```bash
+python3 ~/.hermes/skills/video/scripts/setup.py --check
 ```
 
 ## 📖 Usage
 
-### Basic Analysis
+### Via Hermes Chat
 
-```bash
-# Analyze a video file
-python3 scripts/mimo_video_pipeline.py /path/to/video.mp4
-
-# Analyze with custom FPS
-python3 mimo-video-analyzer/analyze.py video.mp4 --fps 0.25
-
-# Analyze with custom prompt
-python3 mimo-video-analyzer/analyze.py video.mp4 --prompt "Find funny moments"
+```
+/watch https://youtu.be/VIDEO_ID summarize this
 ```
 
-### TypeScript (Zod Validation)
+### Via CLI
 
 ```bash
-# Analyze keyframes with structured output
-npx tsx mimo-video-analyzer/analyze-zod.ts keyframes_dir/ video_url
+# Basic analysis (Claude mode - prints markdown report)
+python3 ~/.hermes/skills/video/scripts/watch.py https://youtu.be/VIDEO_ID
+
+# MiMo mode - analyzes via API
+python3 ~/.hermes/skills/video/scripts/watch.py https://youtu.be/VIDEO_ID --engine opencode --question "summarize this"
+
+# Focused analysis
+python3 ~/.hermes/skills/video/scripts/watch.py https://youtu.be/VIDEO_ID --start 1:00 --end 2:00
+
+# Transcript only (cheapest)
+python3 ~/.hermes/skills/video/scripts/watch.py https://youtu.be/VIDEO_ID --detail transcript
 ```
 
-### Python API
+### Engine Options
 
-```python
-from mimo_video_analyzer.analyze import analyze_video
+```bash
+# Claude mode (default) - prints markdown report for Claude to read
+/watch https://youtu.be/VIDEO_ID
 
-# Analyze video
-result = analyze_video(
-    video_path="video.mp4",
-    fps=0.5,
-    prompt="Find viral moments",
-    max_tokens=4096
-)
-
-# Access results
-moments = result['moments']
-usage = result['usage']
+# MiMo mode - analyzes via OpenCode Zen API
+/watch --engine opencode --question "what happens at 2:30?" https://youtu.be/VIDEO_ID
 ```
 
 ## 📊 Detail Modes
 
-| Mode | FPS | Tokens/min | Best For |
-|------|-----|------------|----------|
-| **Quick scan** | 0.125 | 1,050 | Long videos, overview |
-| **Balanced** | 0.25 | 2,100 | Most use cases |
-| **Detailed** | 0.5 | 4,200 | Short videos, deep analysis |
-| **Maximum** | 1.0 | 8,400 | Critical moments, max detail |
+| Mode | Frames | Speed | Best For |
+|------|--------|-------|----------|
+| `transcript` | 0 | ~4.5s | Cheapest, text-only |
+| `efficient` | 50 | ~0.5s | Fast scan |
+| `balanced` | 100 | ~21s | Default, good balance |
+| `token-burner` | uncapped | ~21s | Full coverage |
 
-### Token Usage Example
+### Frame Budget by Duration
 
-For a 33-minute video at 0.25 FPS:
-- ~15 frames/min × 33 min = ~500 frames
-- ~140 tokens/frame = ~70K tokens
-- Cost: $0 (free tier)
+| Duration | Default Frames | Coverage |
+|----------|----------------|----------|
+| ≤30s | ~30 | Dense |
+| 30s - 1min | ~40 | Dense |
+| 1 - 3min | ~60 | Comfortable |
+| 3 - 10min | ~80 | Sparse |
+| >10min | 100 (capped) | Use `--start`/`--end` |
 
 ## 🔗 Hermes Integration
 
 ### Memory
 
-Save analysis results to Hermes memory:
+Video analyses are automatically saved to Hermes memory:
 
 ```python
-# Results automatically saved to ~/.hermes/memories/video_analysis/
-# Access via: session_search(query="video analysis results")
+# Recall previous analyses
+hermes chat "What videos have I analyzed about Python?"
 ```
 
 ### Cron Jobs
 
 Schedule regular video analysis:
 
-```yaml
-# ~/.hermes/cron/video_analysis.yaml
-schedule: "0 2 * * *"  # Daily at 2 AM
-task: |
-  Analyze new videos in ~/videos/ directory
-  Save results to memory
-  Notify if viral moments found
+```bash
+# Create via Hermes
+hermes cron create daily-tech-news \
+  --schedule "0 9 * * *" \
+  --prompt "Analyze https://youtu.be/NEWS_VIDEO and summarize key points"
 ```
 
-### Bundles
+### Skill Bundles
 
-Include in Hermes bundles:
+Combine with other skills:
 
-```yaml
-# ~/.hermes/bundles/content_creation.yaml
-skills:
-  - video-analysis-mimo
-  - clipping-pipeline
-  
-tasks:
-  - analyze_videos
-  - generate_clips
+```bash
+# Use the video-research bundle
+/video-research https://youtu.be/VIDEO_ID analyze this thoroughly
 ```
 
 ## 📁 Directory Structure
 
 ```
 hermes-video/
-├── scripts/
-│   ├── mimo_video_pipeline.py      # Main pipeline (audio → trim → video)
-│   └── mimo_video_test.py          # Test utilities
-├── mimo-video-analyzer/
-│   ├── analyze.py                  # Python analyzer (OpenAI client)
-│   ├── analyze-zod.ts              # TypeScript analyzer (Zod validation)
-│   ├── test_limit.py               # API limit testing
-│   └── test_limit_real.py          # Real video limit testing
-├── clipping-pipeline/
-│   └── schema.py                   # Pydantic schemas (fallback)
-├── skills/
-│   └── watch/                      # Hermes watch skill
-├── docs/                           # Documentation
-└── README.md
+├── skills/watch/
+│   ├── SKILL.md                    # Hermes skill contract
+│   └── scripts/
+│       ├── watch.py                # Entry point
+│       ├── download.py             # yt-dlp wrapper
+│       ├── frames.py               # ffmpeg frame extraction
+│       ├── transcribe.py           # VTT parser
+│       ├── whisper.py              # Groq/OpenAI client
+│       ├── config.py               # Configuration
+│       ├── env.py                  # Environment loading
+│       ├── errors.py               # Custom exceptions
+│       ├── types.py                # Type definitions
+│       ├── opencode_client.py      # MiMo V2.5 client
+│       ├── hermes_memory.py        # Memory integration
+│       └── hermes_cron.py          # Cron integration
+├── tests/
+│   ├── conftest.py                 # Test fixtures
+│   ├── test_types.py               # Type tests
+│   ├── test_env.py                 # Env tests
+│   ├── test_config.py              # Config tests
+│   └── test_opencode_client.py     # Client tests
+├── docs/
+│   ├── PLAN-MIMO.md                # MiMo integration plan
+│   ├── PLAN-REFACTOR.md            # Refactoring plan
+│   ├── PLAN-REBRAND.md             # Rebranding plan
+│   └── PLAN-README.md              # README rewrite plan
+├── skill-bundles/
+│   └── video-research.yaml         # Skill bundle
+├── .env.example                    # Environment template
+├── manifest.json                   # Skill manifest
+├── install.sh                      # Install script
+├── SECURITY.md                     # Security policy
+├── LICENSE                         # MIT License
+└── README.md                       # This file
 ```
+
+## 🧪 Testing
+
+### Run Tests
+
+```bash
+# Run all tests (218 tests)
+python3 -m pytest tests/ -v
+
+# Run specific test files
+python3 -m pytest tests/test_types.py -v
+python3 -m pytest tests/test_env.py -v
+python3 -m pytest tests/test_opencode_client.py -v
+```
+
+### Test Coverage
+
+| File | Tests | Description |
+|------|-------|-------------|
+| `test_types.py` | 110 | Dataclasses, exceptions, protocols |
+| `test_env.py` | 35 | Environment loading |
+| `test_opencode_client.py` | 61 | API client |
+| `test_config.py` | 12 | Configuration |
+
+## 📚 Documentation
+
+- **[SKILL.md](skills/watch/SKILL.md)** — Full skill documentation
+- **[PLAN-MIMO.md](docs/PLAN-MIMO.md)** — MiMo integration plan
+- **[PLAN-REFACTOR.md](docs/PLAN-REFACTOR.md)** — Refactoring plan
+- **[PLAN-REBRAND.md](docs/PLAN-REBRAND.md)** — Rebranding plan
+- **[SECURITY.md](SECURITY.md)** — Security policy
+- **[Hermes Docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)** — Hermes skills guide
 
 ## 🔒 Security
 
 ### API Key Protection
 
-- **Never commit** `OPENCODE_ZEN_API_KEY` to git
-- Store in `~/.hermes/.env` (gitignored)
+- **Never commit** API keys to git
+- Store in `~/.config/watch/.env` (gitignored)
 - Use environment variables in CI/CD
 - Rotate keys periodically
 
 ### Video Privacy
 
-- Videos are base64-encoded and sent to OpenCode Zen API
-- No video data is stored on our servers
-- OpenCode Zen processes requests in memory only
+- Videos are processed locally
+- Only frames are sent to MiMo API (if using opencode engine)
+- No video data stored on external servers
 - Delete local copies after analysis if needed
 
-### Rate Limiting
+### Best Practices
 
-- Free tier: Limited requests per minute
-- Use fallback providers if rate limited
-- Implement retry logic with exponential backoff
-
-## 🧪 Testing
-
-### Unit Tests
-
-```bash
-# Run Python tests
-python3 -m pytest tests/
-
-# Run TypeScript tests
-npm test
-```
-
-### Integration Tests
-
-```bash
-# Test API limits
-python3 mimo-video-analyzer/test_limit.py
-
-# Test with real video
-python3 mimo-video-analyzer/test_limit_real.py
-```
-
-### Manual Testing
-
-```bash
-# Test with small video
-python3 scripts/mimo_video_pipeline.py test_video.mp4
-
-# Test keyframe extraction
-python3 -c "
-from scenedetect import detect, AdaptiveDetector
-scenes = detect('video.mp4', AdaptiveDetector(adaptive_threshold=3.0))
-print(f'Found {len(scenes)} scenes')
-"
-```
-
-## 📚 Documentation
-
-- **[SKILL.md](.hermes/skills/video-processing/video-analysis-mimo/SKILL.md)** — Full skill documentation
-- **[references/](.hermes/skills/video-processing/video-analysis-mimo/references/)** — Detailed guides
-  - `clipping-pipeline-schema.md` — Rust serde schema
-  - `pyscenedetect-quickref.md` — PySceneDetect cheatsheet
-  - `keyframe-analysis-benchmarks.md` — Token benchmarks
-  - `claude-video-reference.md` — Reference implementation
+- Use `--detail transcript` for sensitive content
+- Review analysis results before sharing
+- Use `--no-whisper` to avoid audio upload
 
 ## 🤝 Contributing
 
@@ -267,23 +280,18 @@ print(f'Found {len(scenes)} scenes')
 
 ```bash
 # Clone your fork
-git clone https://github.com/your-username/claude-video.git
-cd claude-video
-
-# Install dependencies
-pip install openai pytest
-npm install
+git clone https://github.com/your-username/hermes-video.git
+cd hermes-video
 
 # Run tests
-python3 -m pytest tests/
-npm test
+python3 -m pytest tests/ -v
 ```
 
 ### Code Style
 
-- Python: PEP 8, type hints
-- TypeScript: Strict mode, Zod validation
+- Python: PEP 8, type hints, docstrings
 - Follow existing patterns in the codebase
+- Add tests for new features
 
 ## 📄 License
 
@@ -291,11 +299,11 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## 🙏 Credits
 
-- **[Xiaomi MiMo](https://huggingface.co/XiaomiMiMo/MiMo-V2.5)** — Multimodal AI model
-- **[OpenCode Zen](https://opencode.ai)** — Free API access
-- **[Hermes Agent](https://hermes-agent.nousresearch.com)** — AI agent framework
-- **[PySceneDetect](https://github.com/ByteDance/scenedetect)** — Scene detection
-- **[Zod](https://zod.dev)** — TypeScript schema validation
+- Original: [bradautomates/claude-video](https://github.com/bradautomates/claude-video)
+- MiMo integration: [m1crodevil](https://github.com/m1crodevil)
+- Model: [Xiaomi MiMo V2.5](https://huggingface.co/XiaomiMiMo/MiMo-V2.5)
+- Agent: [Hermes Agent](https://hermes-agent.nousresearch.com)
+- API: [OpenCode Zen](https://opencode.ai)
 
 ---
 
