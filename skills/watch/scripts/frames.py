@@ -16,8 +16,8 @@ import sys
 import dataclasses
 from pathlib import Path
 
-from .errors import ExtractionError, WatchError
-from .types import Frame, FrameMetadata, VideoMetadata, Seconds
+from errors import ExtractionError, WatchError
+from types import Frame, FrameMetadata, VideoMetadata, Seconds
 
 
 MAX_FPS = 2.0

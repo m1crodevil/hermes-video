@@ -26,8 +26,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from typing import Any, Callable
 
-from .errors import ConfigError, TranscriptionError
-from .types import TranscriptSegment, Seconds, WhisperBackend
+from errors import ConfigError, TranscriptionError
+from types import TranscriptSegment, Seconds, WhisperBackend
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
