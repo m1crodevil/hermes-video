@@ -53,5 +53,11 @@ frames/
 audio.mp3
 audio.wav
 
+# Hermes specific
+~/.hermes/skills/video/
+~/.hermes/skill-bundles/
+~/.hermes/memory/
+~/.hermes/cron/
+
 # Herms local plans (not for repo)
 .herms/
