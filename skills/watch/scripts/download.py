@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from errors import DownloadError
-from types import DownloadResult
+from video_types import DownloadResult
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
