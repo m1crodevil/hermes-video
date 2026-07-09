@@ -314,7 +314,7 @@ def main() -> int:
         import base64
         b64_frames: list[str] = []
         for frame in frames:
-            frame_path = Path(frame["path"])
+            frame_path = Path(frame.path)
             if frame_path.exists():
                 b64_frames.append(base64.b64encode(frame_path.read_bytes()).decode("ascii"))
 
