@@ -23,6 +23,27 @@ def _to_seconds(h: str, m: str, s: str, ms: str) -> Seconds:
 
 
 def parse_vtt(path: str) -> list[dict[str, Any]]:
+    """Parse a WebVTT subtitle file into a list of timestamped segments.
+
+    YouTube auto-subs emit rolling-duplicate cues (each line appears 2–3
+    times as it scrolls).  This function deduplicates consecutive identical
+    cues and merges their time ranges so each segment appears exactly once.
+
+    HTML-style tags (e.g. ``<c>...</c>``) are stripped from cue text.
+
+    Args:
+        path: Filesystem path to the ``.vtt`` subtitle file.
+
+    Returns:
+        A list of dicts, each with ``"start"`` (float seconds), ``"end"``
+        (float seconds), and ``"text"`` (str) keys, sorted by start time.
+        Empty when the file has no parseable cues.
+
+    Example:
+        >>> segments = parse_vtt("video.en.vtt")
+        >>> segments[0]["text"]
+        'Hello world'
+    """
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
@@ -73,7 +94,27 @@ def filter_range(
     start_seconds: Seconds | None,
     end_seconds: Seconds | None,
 ) -> list[dict[str, Any]]:
-    """Return segments whose time range overlaps [start, end]."""
+    """Return segments whose time range overlaps ``[start, end]``.
+
+    A segment is included when *any* part of its ``[start, end]`` interval
+    intersects the requested window.  Unbounded windows (``None``) are treated
+    as ``-inf`` / ``+inf``.
+
+    Args:
+        segments: List of segment dicts with ``"start"`` and ``"end"`` keys.
+        start_seconds: Inclusive lower bound, or ``None`` for unbounded.
+        end_seconds: Inclusive upper bound, or ``None`` for unbounded.
+
+    Returns:
+        Filtered list of segments.  Empty when the range is outside all segments.
+
+    Example:
+        >>> segs = [{"start": 0, "end": 10, "text": "hi"}]
+        >>> filter_range(segs, 5, 15)
+        [{'start': 0, 'end': 10, 'text': 'hi'}]
+        >>> filter_range(segs, 20, 30)
+        []
+    """
     if start_seconds is None and end_seconds is None:
         return segments
     lo = start_seconds if start_seconds is not None else float("-inf")
@@ -82,6 +123,25 @@ def filter_range(
 
 
 def format_transcript(segments: list[dict[str, Any]]) -> str:
+    """Format a list of segments into a human-readable timestamped transcript.
+
+    Each line is prefixed with ``[MM:SS]`` (or ``[H:MM:SS]`` for hour-long
+    videos) followed by the segment text.  Lines are separated by newlines
+    with no trailing newline.
+
+    Args:
+        segments: List of dicts with ``"start"`` (float seconds) and
+            ``"text"`` keys.
+
+    Returns:
+        A single multi-line string ready for printing or LLM context.
+
+    Example:
+        >>> segs = [{"start": 0.0, "text": "Hello"}, {"start": 65.0, "text": "World"}]
+        >>> print(format_transcript(segs))
+        [00:00] Hello
+        [01:05] World
+    """
     lines = []
     for seg in segments:
         start = int(seg["start"])

@@ -20,6 +20,24 @@ VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
 
 def is_url(source: str) -> bool:
+    """Determine whether *source* looks like an HTTP(S) URL.
+
+    Strings starting with ``-`` are treated as CLI flags, not URLs (avoids
+    confusion when building ``yt-dlp`` commands).
+
+    Args:
+        source: Raw input string from the user.
+
+    Returns:
+        ``True`` when the string parses as a valid HTTP/HTTPS URL with a
+        network location component.
+
+    Example:
+        >>> is_url("https://youtu.be/dQw4w9WgXcQ")
+        True
+        >>> is_url("/home/user/video.mp4")
+        False
+    """
     if source.startswith("-"):
         return False
     parsed = urlparse(source)
@@ -27,6 +45,30 @@ def is_url(source: str) -> bool:
 
 
 def resolve_local(path: str) -> DownloadResult:
+    """Resolve a local file path to a :class:`DownloadResult`.
+
+    Validates that the file exists and warns (but does not fail) when the
+    extension is not a recognised video format.  No download is performed.
+
+    Security:
+        - Expands ``~`` and resolves symlinks via ``Path.expanduser().resolve()``
+        - Only files that physically exist on disk are returned
+
+    Args:
+        path: Local file path (may include ``~`` or relative components).
+
+    Returns:
+        A :class:`DownloadResult` with ``video_path`` set to the resolved
+        absolute path and ``downloaded=False``.
+
+    Raises:
+        DownloadError: If the file does not exist.
+
+    Example:
+        >>> result = resolve_local("~/Downloads/lecture.mp4")
+        >>> print(result.video_path)
+        /home/user/Downloads/lecture.mp4
+    """
     p = Path(path).expanduser().resolve()
     if not p.exists():
         raise DownloadError(f"File not found: {p}", source=str(p))
@@ -67,12 +109,32 @@ def _pick_video(out_dir: Path) -> Path | None:
 def fetch_captions(url: str, out_dir: Path) -> DownloadResult:
     """Fetch metadata and best available VTT captions without downloading video.
 
+    Calls ``yt-dlp --skip-download`` to retrieve video metadata (title,
+    uploader, duration) and subtitles (manual first, then auto-generated).
+    The downloaded subtitle files are written to *out_dir* so that
+    :func:`transcribe.parse_vtt` can parse them without needing Whisper.
+
+    Security:
+        - No credentials are stored or transmitted
+        - Only public URLs are supported by yt-dlp without cookies
+
     Args:
-        url: Video URL to fetch captions for
-        out_dir: Output directory for subtitle files
+        url: Video URL to fetch captions for (YouTube, Vimeo, etc.).
+        out_dir: Output directory for subtitle and metadata files. Created
+            if it does not exist.
 
     Returns:
-        DownloadResult with subtitle_path and info populated
+        A :class:`DownloadResult` with ``subtitle_path`` pointing to the best
+        VTT file (or ``None`` if none found) and ``info`` dict populated with
+        title/uploader/duration.
+
+    Raises:
+        DownloadError: If ``yt-dlp`` is not installed on the system.
+
+    Example:
+        >>> result = fetch_captions("https://youtu.be/abc", Path("/tmp/caps"))
+        >>> print(result.subtitle_path)
+        /tmp/caps/video.en.vtt
     """
     if shutil.which("yt-dlp") is None:
         raise DownloadError(
@@ -132,16 +194,34 @@ def download_url(
 ) -> DownloadResult:
     """Download video via yt-dlp.
 
+    Downloads the video at the given URL into *out_dir*, fetching the best
+    available resolution up to 720p. Subtitles (manual then auto-generated,
+    English) are also downloaded in VTT format.  A ``video.info.json`` file
+    containing metadata (title, uploader, duration) is saved alongside.
+
+    Security:
+        - No credentials are stored or transmitted
+        - Only public URLs are supported without cookies
+        - yt-dlp validates URLs before download
+
     Args:
-        url: Video URL to download
-        out_dir: Output directory for video and metadata
-        audio_only: Download audio track only
+        url: Video URL (YouTube, Vimeo, TikTok, etc.).
+        out_dir: Output directory for downloaded files. Created if needed.
+        audio_only: Download audio track only (default: ``False``).
 
     Returns:
-        DownloadResult with video_path and metadata
+        A :class:`DownloadResult` with ``video_path`` pointing to the
+        downloaded file, ``subtitle_path`` to the best VTT (or ``None``),
+        and ``downloaded=True``.
 
     Raises:
-        DownloadError: If yt-dlp fails or is not installed
+        DownloadError: If ``yt-dlp`` is not installed, produces no video file,
+            or the download fails.
+
+    Example:
+        >>> result = download_url("https://youtu.be/abc", Path("/tmp/output"))
+        >>> print(result.video_path)
+        /tmp/output/video.mp4
     """
     if shutil.which("yt-dlp") is None:
         raise DownloadError(
@@ -200,13 +280,31 @@ def download(
 ) -> DownloadResult:
     """Download video or resolve local file path.
 
+    This is the top-level entry point that automatically chooses between
+    :func:`download_url` (for HTTP/HTTPS URLs) and :func:`resolve_local`
+    (for local file paths).
+
+    Security:
+        - No credentials are stored or transmitted
+        - Local paths are resolved and checked for existence
+
     Args:
-        source: Video URL or local file path
-        out_dir: Output directory for downloaded files
-        audio_only: Download audio track only
+        source: Video URL or local file path. URLs must use ``http://`` or
+            ``https://`` scheme; everything else is treated as a local path.
+        out_dir: Output directory for downloaded files.
+        audio_only: Download audio track only (default: ``False``).
 
     Returns:
-        DownloadResult with paths and metadata
+        A :class:`DownloadResult` with ``video_path``, ``subtitle_path``,
+        ``info`` metadata, and ``downloaded`` flag.
+
+    Raises:
+        DownloadError: If the URL download fails or the local file does not
+            exist.
+
+    Example:
+        >>> result = download("https://youtu.be/abc", Path("/tmp/output"))
+        >>> result = download("~/videos/lecture.mp4", Path("/tmp/output"))
     """
     if is_url(source):
         return download_url(source, out_dir, audio_only=audio_only)

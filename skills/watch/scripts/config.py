@@ -151,11 +151,20 @@ def get_opencode_config() -> dict[str, str | None]:
 
     Priority for each value:
       1. OS environment variable
-      2. ~/.config/watch/.env file
+      2. ``~/.config/watch/.env`` file
       3. ``None`` (not configured)
 
+    Security:
+        - API key is loaded from environment only; never hardcoded
+
     Returns:
-        dict with keys ``api_key`` and ``model``.
+        A dict with keys ``"api_key"`` (str or ``None``) and ``"model"``
+        (str or ``None``).
+
+    Example:
+        >>> cfg = get_opencode_config()
+        >>> if cfg["api_key"]:
+        ...     print("OpenCode is configured")
     """
     api_key = get_api_key("OPENCODE_API_KEY")
     model = get_env("OPENCODE_MODEL")
@@ -167,12 +176,28 @@ def get_opencode_config() -> dict[str, str | None]:
 # ---------------------------------------------------------------------------
 
 def frame_cap(detail: str) -> int | None:
-    """Return the maximum number of frames for *detail* level.
+    """Return the maximum number of frames for a given detail level.
 
-    * ``efficient``  → 50
-    * ``balanced``   → 100
-    * ``token-burner`` / ``transcript`` → ``None`` (unlimited)
-    * anything else  → 100 (safe default)
+    Maps the human-readable detail level string to a frame budget used by
+    the frame extraction engines.
+
+    Detail levels:
+        * ``"efficient"`` → 50 frames
+        * ``"balanced"`` → 100 frames
+        * ``"token-burner"`` / ``"transcript"`` → ``None`` (unlimited)
+        * Anything else → 100 (safe default)
+
+    Args:
+        detail: Detail level string (e.g. ``"balanced"``).
+
+    Returns:
+        Maximum frame count, or ``None`` for unlimited.
+
+    Example:
+        >>> frame_cap("efficient")
+        50
+        >>> frame_cap("token-burner") is None
+        True
     """
     if detail == "efficient":
         return 50
@@ -206,12 +231,38 @@ def load_config(
 ) -> WatchConfig:
     """Build a :class:`WatchConfig` from env vars + caller overrides.
 
-    Resolution order for *detail* (each level only used when the next is
-    ``None``):
+    This is the primary configuration entry point.  Resolution order for
+    *detail* (each level only used when the next is ``None``):
 
     1. Explicit *detail* argument
     2. ``WATCH_DETAIL`` env / .env file
     3. ``DEFAULT_DETAIL`` constant (``"balanced"``)
+
+    When *max_frames* is not provided, it is derived from the detail level
+    via :func:`frame_cap`.
+
+    Args:
+        source: Video URL or local file path.
+        detail: Detail level (``"transcript"``, ``"efficient"``,
+            ``"balanced"``, ``"token-burner"``).  Resolved from env if ``None``.
+        resolution: Target width in pixels for extracted frames (default: 512).
+        fps: Explicit fps override, or ``None`` for auto-selection.
+        timestamps: Comma-separated timestamps for cue extraction, or ``None``.
+        start: Start time (``"MM:SS"`` or seconds), or ``None``.
+        end: End time (``"MM:SS"`` or seconds), or ``None``.
+        out_dir: Output directory override, or ``None`` for default.
+        no_whisper: Skip transcription (default: ``False``).
+        whisper_backend: Force ``"groq"`` or ``"openai"``, or ``None`` for auto.
+        no_dedup: Disable perceptual deduplication (default: ``False``).
+        max_frames: Explicit frame budget, or ``None`` to derive from detail.
+
+    Returns:
+        A fully populated :class:`WatchConfig` dataclass.
+
+    Example:
+        >>> cfg = load_config("https://youtu.be/abc", detail="efficient")
+        >>> cfg.max_frames
+        50
     """
     # Resolve detail via env chain
     if detail is None:
@@ -247,8 +298,17 @@ def load_config(
 def get_config() -> dict[str, object]:
     """Return a plain dict with ``detail`` and ``config_file`` keys.
 
-    Prefer :func:`load_config` for new code — it returns a fully-typed
+    This is a legacy helper kept for backward compatibility.  New code
+    should prefer :func:`load_config` which returns a fully-typed
     :class:`WatchConfig` dataclass.
+
+    Returns:
+        A dict with ``"detail"`` (str) and ``"config_file"`` (str) keys.
+
+    Example:
+        >>> cfg = get_config()
+        >>> cfg["detail"]
+        'balanced'
     """
     detail = get_env("WATCH_DETAIL", default=DEFAULT_DETAIL)
     if detail not in DETAILS:
@@ -268,6 +328,19 @@ def get_config() -> dict[str, object]:
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     """Delegate to :func:`env.load_env_file`.
 
-    Kept for backward compatibility; prefer ``env.load_env_file`` directly.
+    Kept for backward compatibility with callers that import it from this
+    module directly.  Prefer ``env.load_env_file`` in new code.
+
+    Args:
+        path: Path to the ``.env`` file, or ``None`` for the default
+            (``~/.config/watch/.env``).
+
+    Returns:
+        A dict mapping environment variable names to their string values.
+
+    Example:
+        >>> env_vars = read_env_file()
+        >>> "GROQ_API_KEY" in env_vars
+        True
     """
     return load_env_file(path=path)
