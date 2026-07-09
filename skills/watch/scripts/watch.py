@@ -110,7 +110,7 @@ def main() -> int:
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
         dl = fetch_captions(args.source, work / "download")
-        if dl.get("subtitle_path"):
+        if dl.subtitle_path:
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
                 transcript_text = format_transcript(transcript_segments)
@@ -142,7 +142,7 @@ def main() -> int:
         video_path = dl["video_path"]
 
     meta = get_metadata(video_path) if video_path else {
-        "duration_seconds": float((dl.get("info") or {}).get("duration") or 0),
+        "duration_seconds": float((dl.info or {}).get("duration") or 0),
         "width": None,
         "height": None,
         "codec": None,
@@ -240,7 +240,7 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
-    if not transcript_segments and dl.get("subtitle_path"):
+    if not transcript_segments and dl.subtitle_path:
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
@@ -282,7 +282,7 @@ def main() -> int:
     # Engine dispatch: opencode sends frames+transcript to MiMo V2.5 API
     # -----------------------------------------------------------------------
     engine = args.engine or "claude"
-    info = dl.get("info") or {}
+    info = dl.info or {}
 
     if engine == "opencode":
         from opencode_client import OpenCodeClient
@@ -470,7 +470,7 @@ def main() -> int:
             "unavailable or failed, so there is no visual fallback here. Re-run with "
             "`--detail balanced` for frames._"
         )
-    elif focused and dl.get("subtitle_path"):
+    elif focused and dl.subtitle_path:
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"
