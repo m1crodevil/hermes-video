@@ -1,0 +1,10 @@
+name: video-research
+description: "Research videos with analysis, transcription, and notes"
+skills:
+  - watch
+  - plan
+  - notes
+instruction: |
+  Always analyze the video thoroughly.
+  Create detailed notes with timestamps.
+  Save to memory for future reference.
