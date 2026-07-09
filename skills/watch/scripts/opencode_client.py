@@ -313,6 +313,7 @@ class OpenCodeClient:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._api_key}",
+                "User-Agent": "hermes-video/1.0.0",
             },
         )
 
