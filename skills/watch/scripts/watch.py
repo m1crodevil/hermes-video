@@ -381,7 +381,7 @@ def main() -> int:
             f"({effective_duration:.1f}s)"
         )
     if meta.width and meta.height:
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.codec or 'unknown codec'})")
+        print(f"- **Resolution:** {meta.width}x{meta.height} ({meta.codec or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.selected_count
