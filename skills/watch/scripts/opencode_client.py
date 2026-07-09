@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .errors import APIError, ConfigError
+from errors import APIError, ConfigError
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ class OpenCodeClient:
         Raises:
             ConfigError: If the API key is missing or invalid.
         """
-        from .env import get_api_key
+        from env import get_api_key
 
         api_key = get_api_key("OPENCODE_API_KEY", required=True)
         # get_api_key returns str | None, but required=True guarantees str

@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .errors import ConfigError
+from errors import ConfigError
 
 # Default config file location
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "watch"
