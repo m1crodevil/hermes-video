@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.0.0"
+version: "1.1.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -150,6 +150,8 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 python3 "${SKILL_DIR}/scripts/watch.py" "<source>"
 ```
 
+**Pitfall:** yt-dlp's `--convert-subs json3` does NOT work. To get JSON3 format, use `--sub-format "json3/best"` as a preference. The script handles this automatically.
+
 Optional flags:
 - `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames (transcript only, skips video download when captions exist); `efficient` = fast keyframes (cap 50); `balanced` = scene-aware frames (cap 100); `token-burner` = scene-aware, uncapped.
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
@@ -233,18 +235,44 @@ Behavior:
 
 The script gets a timestamped transcript in one of two ways:
 
-1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
+1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available. Captions are downloaded in **JSON3** format when available (provides word-level timing via `tOffsetMs` and ASR confidence via `acAsrConf`), falling back to VTT for local files. See `references/json3-format.md` for the full schema and parser. **Important:** `--convert-subs json3` does NOT work in yt-dlp. Use `--sub-format "json3/best"` as a preference instead.
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
 Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
 
+## Cookies & Rate Limiting
+
+YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates this with three strategies:
+
+1. **Skip re-download** — `fetch_captions()` downloads subtitles once; `download_url()` skips re-downloading if already fetched.
+2. **Browser cookies** — If Chrome/Chromium is detected, `--cookies-from-browser chrome` is passed automatically for authenticated sessions.
+3. **Sleep intervals** — `--sleep-subtitles 3` adds a 3-second delay between subtitle requests as a safety net.
+
+### Setup cookies (recommended)
+
+For best reliability, log in to YouTube in Chrome. The script auto-detects cookies from:
+- `~/.config/google-chrome/Default/Cookies` (Linux)
+- `~/.config/chromium/Default/Cookies` (Linux)
+- `~/Library/Application Support/Google/Chrome/Default/Cookies` (macOS)
+
+No manual configuration needed — just be logged in to YouTube in Chrome.
+
+### Workaround: PO Token
+
+For production use, consider installing a PO Token provider plugin:
+```bash
+# See: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+yt-dlp --extractor-args "youtube:po_token=web.gvs+XXX" ...
+```
+
 ## Failure modes and handling
 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
+- **Subtitle download fails with HTTP 429** → YouTube rate-limits subtitle requests, especially when multiple `yt-dlp` calls hit the same video in quick succession (e.g. `fetch_captions` + `download` both request subs). See `references/youtube-429-rate-limit.md` for full analysis and workarounds. The script tolerates this — if the subtitle file is missing after download, it proceeds without a transcript. **Do NOT re-run immediately** — wait a few minutes or add `--cookies-from-browser chrome` on retry.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
@@ -269,7 +297,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
+- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data. **Exception:** when Chrome/Chromium cookies are auto-detected, `--cookies-from-browser chrome` is passed to yt-dlp to use your existing browser session for authenticated requests. No credentials are stored or transmitted by this skill; it only reads the browser's local cookie store.
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
