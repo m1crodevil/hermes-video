@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
-from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
+from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
@@ -99,9 +99,13 @@ def main() -> int:
         dl = fetch_captions(args.source, work / "download")
         if dl.get("subtitle_path"):
             try:
-                transcript_segments = parse_vtt(dl["subtitle_path"])
+                if dl["subtitle_path"].endswith(".json3"):
+                    transcript_segments = parse_json3(dl["subtitle_path"])
+                    transcript_source = "captions (json3)"
+                else:
+                    transcript_segments = parse_vtt(dl["subtitle_path"])
+                    transcript_source = "captions (vtt)"
                 transcript_text = format_transcript(transcript_segments)
-                transcript_source = "captions"
             except Exception as exc:
                 print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
                 transcript_segments = []
@@ -109,6 +113,8 @@ def main() -> int:
     # --timestamps needs the video for frame grabs, so it overrides the
     # transcript-mode download skip (and forces a full, not audio-only, fetch).
     audio_only = detail == "transcript" and not cue_timestamps
+    # Pass existing subtitle to download_url() to prevent 429 re-download
+    existing_sub = dl.get("subtitle_path") if dl.get("subtitle_path") else None
     if detail == "transcript" and transcript_segments and not cue_timestamps:
         video_path = None
     else:
@@ -122,6 +128,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                existing_subtitle=existing_sub,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)

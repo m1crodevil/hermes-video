@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Parse a WebVTT subtitle file into a clean, timestamped transcript.
+"""Parse YouTube JSON3 subtitle files into clean, timestamped transcripts.
 
-YouTube auto-subs emit rolling-duplicate cues (each line appears 2-3 times as it
-scrolls). We dedupe consecutive identical cues and merge their time ranges.
+JSON3 (fmt=json3) is YouTube's structured caption format with word-level timing
+and ASR confidence scores. Falls back to VTT parsing if a .vtt file is provided.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
+
+# ── VTT fallback (kept for local .vtt files) ──────────────────────────────
 
 TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
@@ -48,6 +51,56 @@ def parse_vtt(path: str) -> list[dict]:
         if cue_text:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
+
+    return _dedupe(segments)
+
+
+# ── JSON3 parser (primary) ────────────────────────────────────────────────
+
+def parse_json3(path: str) -> list[dict]:
+    """Parse YouTube JSON3 subtitle format.
+
+    JSON3 has word-level timing via tOffsetMs on each seg, and ASR confidence
+    via acAsrConf. This parser returns segments with an optional `words` list
+    for callers that want word-level granularity.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    segments: list[dict] = []
+
+    for event in data.get("events", []):
+        segs = event.get("segs", [])
+        if not segs:
+            continue
+
+        # Join all segs; skip pure newline events
+        text = "".join(s.get("utf8", "") for s in segs).strip()
+        if not text or text == "\n":
+            continue
+
+        start_ms = event.get("tStartMs", 0)
+        dur_ms = event.get("dDurationMs", 0)
+        start = start_ms / 1000.0
+        end = (start_ms + dur_ms) / 1000.0
+
+        # Build word-level list from segs that have tOffsetMs
+        words: list[dict] = []
+        for seg in segs:
+            utf8 = seg.get("utf8", "").strip()
+            if not utf8:
+                continue
+            offset_ms = seg.get("tOffsetMs", 0)
+            words.append({
+                "word": utf8,
+                "start": round((start_ms + offset_ms) / 1000.0, 3),
+                "confidence": seg.get("acAsrConf", 0),
+            })
+
+        segments.append({
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "text": text,
+            "words": words,
+        })
 
     return _dedupe(segments)
 
@@ -91,6 +144,12 @@ def format_transcript(segments: list[dict]) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: transcribe.py <vtt-path>", file=sys.stderr)
+        print("usage: transcribe.py <json3-or-vtt-path>", file=sys.stderr)
         raise SystemExit(2)
-    print(format_transcript(parse_vtt(sys.argv[1])))
+
+    path = sys.argv[1]
+    if path.endswith(".json3"):
+        segments = parse_json3(path)
+    else:
+        segments = parse_vtt(path)
+    print(format_transcript(segments))
