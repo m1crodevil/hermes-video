@@ -64,20 +64,7 @@ def main() -> int:
         "--no-dedup",
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
-            "frames (static screen recordings, held slides) instead of collapsing them.",
-    )
-    ap.add_argument(
-        "--engine",
-        choices=["claude", "opencode"],
-        default=None,
-        help="AI engine: claude (default, prints markdown report for Read tool) "
-             "or opencode (MiMo V2.5 via OpenCode Zen API — sends frames + transcript directly)",
-    )
-    ap.add_argument(
-        "--question",
-        type=str,
-        default=None,
-        help="Question to ask about the video (required for opencode engine)",
+             "frames (static screen recordings, held slides) instead of collapsing them.",
     )
     args = ap.parse_args()
 
@@ -110,9 +97,9 @@ def main() -> int:
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
         dl = fetch_captions(args.source, work / "download")
-        if dl.subtitle_path:
+        if dl.get("subtitle_path"):
             try:
-                transcript_segments = parse_vtt(dl.subtitle_path)
+                transcript_segments = parse_vtt(dl["subtitle_path"])
                 transcript_text = format_transcript(transcript_segments)
                 transcript_source = "captions"
             except Exception as exc:
@@ -139,16 +126,16 @@ def main() -> int:
         else:
             print("[watch] using local file…", file=sys.stderr)
             dl = download(args.source, work / "download")
-        video_path = dl.video_path
+        video_path = dl["video_path"]
 
     meta = get_metadata(video_path) if video_path else {
-        "duration_seconds": float((dl.info or {}).get("duration") or 0),
+        "duration_seconds": float((dl.get("info") or {}).get("duration") or 0),
         "width": None,
         "height": None,
         "codec": None,
         "has_audio": False,
     }
-    full_duration = meta.duration_seconds
+    full_duration = meta["duration_seconds"]
 
     start_sec = parse_time(args.start)
     end_sec = parse_time(args.end)
@@ -198,9 +185,9 @@ def main() -> int:
             start_seconds=start_sec,
             end_seconds=end_sec,
         )
-        if cue_meta.dropped_out_of_window:
+        if cue_meta.get("dropped_out_of_window"):
             print(
-                f"[watch] {cue_meta.dropped_out_of_window} cue timestamp(s) outside the "
+                f"[watch] {cue_meta['dropped_out_of_window']} cue timestamp(s) outside the "
                 "focus range — dropped",
                 file=sys.stderr,
             )
@@ -240,16 +227,16 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
-    if not transcript_segments and dl.subtitle_path:
+    if not transcript_segments and dl.get("subtitle_path"):
         try:
-            all_segments = parse_vtt(dl.subtitle_path)
+            all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
             transcript_text = format_transcript(transcript_segments)
             transcript_source = "captions"
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper and video_path and meta.has_audio:
+    if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
             try:
@@ -275,96 +262,10 @@ def main() -> int:
                 f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
                 file=sys.stderr,
             )
-    elif not transcript_segments and video_path and not meta.has_audio:
+    elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
-    # -----------------------------------------------------------------------
-    # Engine dispatch: opencode sends frames+transcript to MiMo V2.5 API
-    # -----------------------------------------------------------------------
-    engine = args.engine or "claude"
-    info = dl.info or {}
-
-    if engine == "opencode":
-        from opencode_client import OpenCodeClient
-        from config import get_opencode_config
-
-        oc_config = get_opencode_config()
-        api_key = oc_config.get("api_key")
-        if not api_key:
-            print("[watch] --engine opencode requires OPENCODE_API_KEY (env or ~/.config/watch/.env)", file=sys.stderr)
-            return 1
-
-        model = oc_config.get("model") or "mimo-v2.5-free"
-        client = OpenCodeClient(api_key=api_key, model=model)
-        print(f"[watch] using opencode engine (model={model})", file=sys.stderr)
-
-        # Build the question
-        question = args.question
-        if not question:
-            question = (
-                "Analyze this video. Describe what is happening, key events, "
-                "and any notable details visible in the frames and transcript."
-            )
-            print("[watch] no --question provided, using default analysis prompt", file=sys.stderr)
-
-        # Collect transcript text for the prompt
-        transcript_for_prompt = transcript_text or "(no transcript available)"
-
-        # Load frames as base64
-        import base64
-        b64_frames: list[str] = []
-        for frame in frames:
-            frame_path = Path(frame.path)
-            if frame_path.exists():
-                b64_frames.append(base64.b64encode(frame_path.read_bytes()).decode("ascii"))
-
-        if not b64_frames:
-            print("[watch] no frames to send — falling back to text-only analysis", file=sys.stderr)
-
-        # Build the analysis prompt
-        prompt_parts = [f"Question: {question}"]
-        prompt_parts.append(f"\nTranscript:\n{transcript_for_prompt}")
-        if b64_frames:
-            prompt_parts.append(f"\n[Video contains {len(b64_frames)} frames extracted at various timestamps]")
-        full_prompt = "\n".join(prompt_parts)
-
-        # Build message (multiframe if we have frames, text-only otherwise)
-        if b64_frames:
-            user_msg = client.create_multiframe_message(b64_frames, full_prompt)
-        else:
-            user_msg = {"role": "user", "content": full_prompt}
-
-        messages = [
-            {"role": "system", "content": "You are a video analysis assistant. Analyze the provided video frames and transcript to answer the user's question. Be thorough and specific about what you observe."},
-            user_msg,
-        ]
-
-        try:
-            response = client.chat_completion(messages, max_tokens=8192)
-            answer = response["choices"][0]["message"]["content"]
-        except Exception as exc:
-            print(f"[watch] OpenCode API error: {exc}", file=sys.stderr)
-            return 1
-
-        # Print the result
-        print()
-        print("# Video Analysis (MiMo V2.5)")
-        print()
-        print(f"- **Source:** {args.source}")
-        if info.get("title"):
-            print(f"- **Title:** {info['title']}")
-        print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
-        print(f"- **Engine:** opencode ({model})")
-        print(f"- **Frames sent:** {len(b64_frames)}")
-        print(f"- **Question:** {question}")
-        print()
-        print("---")
-        print()
-        print(answer)
-        print()
-        print("---")
-        print(f"_Work dir: `{work}` — delete when done._")
-        return 0
+    info = dl.get("info") or {}
 
     print()
     print("# watch: video report")
@@ -380,25 +281,25 @@ def main() -> int:
             f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
             f"({effective_duration:.1f}s)"
         )
-    if meta.width and meta.height:
-        print(f"- **Resolution:** {meta.width}x{meta.height} ({meta.codec or 'unknown codec'})")
+    if meta.get("width") and meta.get("height"):
+        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
-    detail_count = frame_meta.selected_count
+    detail_count = frame_meta.get("selected_count", 0)
     if detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
-        engine = frame_meta.engine
-        fallback = " with uniform fallback" if frame_meta.fallback else ""
-        deduped = frame_meta.deduped_count
+        engine = frame_meta.get("engine", "scene")
+        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
+        deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(
-            f"- **Frames:** {detail_count} selected from {frame_meta.candidate_count} "
+            f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
             f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
         )
     elif not cue_frames:
         print("- **Frames:** skipped (transcript detail)")
     if cue_frames:
-        dropped = cue_meta.dropped_out_of_window
+        dropped = cue_meta.get("dropped_out_of_window", 0)
         drop_note = f", {dropped} dropped outside range" if dropped else ""
         print(
             f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
@@ -445,8 +346,8 @@ def main() -> int:
         print()
         for frame in frames:
             print(
-                f"- `{frame.path}` "
-                f"(t={format_time(frame.timestamp_seconds)}, reason={frame.reason})"
+                f"- `{frame['path']}` "
+                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
             )
     else:
         print("_No frames extracted._")
@@ -470,7 +371,7 @@ def main() -> int:
             "unavailable or failed, so there is no visual fallback here. Re-run with "
             "`--detail balanced` for frames._"
         )
-    elif focused and dl.subtitle_path:
+    elif focused and dl.get("subtitle_path"):
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"

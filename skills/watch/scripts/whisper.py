@@ -24,10 +24,6 @@ import urllib.error
 import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
-from typing import Any, Callable
-
-from errors import ConfigError, TranscriptionError
-from video_types import TranscriptSegment, Seconds, WhisperBackend
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -42,28 +38,15 @@ MAX_UPLOAD_BYTES = 24 * 1024 * 1024
 
 
 def plan_chunks(
-    total_seconds: Seconds,
+    total_seconds: float,
     total_bytes: int,
     max_bytes: int = MAX_UPLOAD_BYTES,
-) -> list[tuple[Seconds, Seconds]]:
+) -> list[tuple[float, float]]:
     """Split a duration into contiguous (offset, duration) chunks under max_bytes.
 
     Size scales linearly with duration (constant-bitrate mono mp3), so an even
-    time split yields evenly-sized chunks.  Returns a single full-length chunk
-    when the audio already fits within *max_bytes*.
-
-    Args:
-        total_seconds: Total audio duration in seconds.
-        total_bytes: Total file size in bytes.
-        max_bytes: Maximum bytes per chunk (default: :data:`MAX_UPLOAD_BYTES`).
-
-    Returns:
-        A list of ``(offset_seconds, duration_seconds)`` tuples that
-        partition the full duration without gaps or overlaps.
-
-    Example:
-        >>> plan_chunks(300.0, 50 * 1024 * 1024)  # fits in one chunk
-        [(0.0, 300.0)]
+    time split yields evenly-sized chunks. Returns a single full-length chunk
+    when the audio already fits.
     """
     if total_bytes <= max_bytes or total_seconds <= 0:
         return [(0.0, total_seconds)]
@@ -80,28 +63,9 @@ def plan_chunks(
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return ``(backend, api_key)`` for Whisper transcription.
+    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
-    Searches environment variables and ``~/.config/watch/.env`` for
-    ``GROQ_API_KEY`` (preferred) or ``OPENAI_API_KEY``.  Groq is checked
-    first because it offers a free tier with no upload size limit.
-
-    Security:
-        - API keys are never logged or returned in error messages
-        - Keys are loaded from environment only; never hardcoded
-
-    Args:
-        preferred: Force a specific backend (``"groq"`` or ``"openai"``).
-            When ``None`` (default), Groq is preferred with OpenAI fallback.
-
-    Returns:
-        A ``(backend_name, api_key)`` tuple, or ``(None, None)`` when no
-        valid key is found.
-
-    Example:
-        >>> backend, key = load_api_key("groq")
-        >>> backend
-        'groq'
+    If `preferred` is "groq" or "openai", only that backend's key is considered.
     """
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
@@ -149,35 +113,9 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
 
 
 def extract_audio(video_path: str, out_path: Path) -> Path:
-    """Extract mono 16kHz 64kbps mp3 from a video file.
-
-    Produces a tiny audio file (~480 kB/min) suitable for upload to any
-    Whisper-compatible transcription API.
-
-    Security:
-        - Only reads the local video file; no network calls
-        - Output is written only to *out_path*
-
-    Args:
-        video_path: Path to the source video file.
-        out_path: Destination path for the extracted ``.mp3``.
-
-    Returns:
-        The resolved *out_path* on success.
-
-    Raises:
-        TranscriptionError: If ``ffmpeg`` is not installed, the extraction
-            fails, or the video has no audio track.
-
-    Example:
-        >>> extract_audio("video.mp4", Path("audio.mp3"))
-        PosixPath('audio.mp3')
-    """
+    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit."""
     if shutil.which("ffmpeg") is None:
-        raise TranscriptionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            backend="unknown",
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -195,41 +133,16 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise TranscriptionError(
-            f"ffmpeg audio extraction failed: {result.stderr.strip()}",
-            backend="unknown",
-            api_error=result.stderr,
-        )
+        raise SystemExit(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
-        raise TranscriptionError(
-            "ffmpeg produced no audio — video may have no audio track",
-            backend="unknown",
-        )
+        raise SystemExit("ffmpeg produced no audio — video may have no audio track")
     return out_path
 
 
-def audio_duration(audio_path: Path) -> Seconds:
-    """Return the duration of an audio file in seconds via ffprobe.
-
-    Args:
-        audio_path: Path to the audio file (mp3, wav, etc.).
-
-    Returns:
-        Duration in seconds as a float.
-
-    Raises:
-        TranscriptionError: If ``ffprobe`` is not installed or fails on the
-            given file.
-
-    Example:
-        >>> audio_duration(Path("audio.mp3"))
-        142.5
-    """
+def audio_duration(audio_path: Path) -> float:
+    """Return the duration of an audio file in seconds via ffprobe."""
     if shutil.which("ffprobe") is None:
-        raise TranscriptionError(
-            "ffprobe is not installed — install with: brew install ffmpeg",
-            backend="unknown",
-        )
+        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
 
     result = subprocess.run(
         [
@@ -243,11 +156,7 @@ def audio_duration(audio_path: Path) -> Seconds:
         text=True,
     )
     if result.returncode != 0:
-        raise TranscriptionError(
-            f"ffprobe failed: {result.stderr.strip()}",
-            backend="unknown",
-            api_error=result.stderr,
-        )
+        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
     fmt = json.loads(result.stdout or "{}").get("format", {})
     return float(fmt.get("duration") or 0.0)
 
@@ -257,39 +166,13 @@ def split_audio(
     work_dir: Path,
     plan: list[tuple[float, float]],
 ) -> list[tuple[Path, float]]:
-    """Slice full_audio into per-plan chunk files, returning ``(path, offset)`` pairs.
+    """Slice full_audio into per-plan chunk files, returning (path, offset) pairs.
 
-    Uses stream copy (``-c copy``) so there is no re-encode and no quality
-    loss; mp3 frame boundaries are close enough for transcription purposes.
-    Each chunk is written as ``chunk_NNN.mp3`` in *work_dir*.
-
-    Security:
-        - Only reads *full_audio*; writes only to *work_dir*
-
-    Args:
-        full_audio: Path to the source mp3 file.
-        work_dir: Directory for chunk files.  Created if needed.
-        plan: Chunk plan from :func:`plan_chunks` — list of
-            ``(offset_seconds, duration_seconds)`` tuples.
-
-    Returns:
-        A list of ``(chunk_path, offset_seconds)`` tuples in plan order.
-
-    Raises:
-        TranscriptionError: If ``ffmpeg`` is not installed or any chunk
-            fails to produce output.
-
-    Example:
-        >>> chunks = split_audio(Path("audio.mp3"), Path("/tmp/chunks"),
-        ...     [(0.0, 120.0), (120.0, 120.0)])
-        >>> len(chunks)
-        2
+    Uses stream copy (`-c copy`) so there is no re-encode and no quality loss;
+    mp3 frame boundaries are close enough for transcription's purposes.
     """
     if shutil.which("ffmpeg") is None:
-        raise TranscriptionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            backend="unknown",
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     chunks: list[tuple[Path, float]] = []
@@ -308,11 +191,8 @@ def split_audio(
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
-            raise TranscriptionError(
-                f"ffmpeg failed to split audio chunk {index + 1}: {result.stderr.strip()}",
-                backend="unknown",
-                api_error=result.stderr,
-                chunk_index=index,
+            raise SystemExit(
+                f"ffmpeg failed to split audio chunk {index + 1}: {result.stderr.strip()}"
             )
         chunks.append((out_path, offset))
     return chunks
@@ -348,18 +228,13 @@ def _build_multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, st
 
     return buf.getvalue(), boundary
 
+
 MAX_ATTEMPTS = 4       # initial + 3 retries
 MAX_429_RETRIES = 2
 RETRY_BASE_DELAY = 2.0
 
 
-def _post_whisper(
-    endpoint: str,
-    api_key: str,
-    model: str,
-    audio_path: Path,
-    backend: str = "unknown",
-) -> dict[str, Any]:
+def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> dict:
     fields = {
         "model": model,
         "response_format": "verbose_json",
@@ -391,20 +266,12 @@ def _post_whisper(
 
             # 4xx other than 429 are client errors — no retry will fix them.
             if 400 <= exc.code < 500 and exc.code != 429:
-                raise TranscriptionError(
-                    f"Whisper request failed: {exc}{detail}",
-                    backend=backend,
-                    api_error=str(exc),
-                )
+                raise SystemExit(f"Whisper request failed: {exc}{detail}")
 
             if exc.code == 429:
                 rate_limit_hits += 1
                 if rate_limit_hits >= MAX_429_RETRIES:
-                    raise TranscriptionError(
-                        f"Whisper request failed: {exc}{detail}",
-                        backend=backend,
-                        api_error=str(exc),
-                    )
+                    raise SystemExit(f"Whisper request failed: {exc}{detail}")
                 delay = _retry_after(exc) or RETRY_BASE_DELAY * (2 ** attempt) + 1
             else:
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
@@ -432,16 +299,10 @@ def _post_whisper(
         try:
             return json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise TranscriptionError(
-                f"Whisper returned non-JSON response: {exc}: {payload[:200]}",
-                backend=backend,
-                api_error=payload[:200],
-            )
+            raise SystemExit(f"Whisper returned non-JSON response: {exc}: {payload[:200]}")
 
-    raise TranscriptionError(
-        f"Whisper request failed after {MAX_ATTEMPTS} attempts: {last_exc}{last_detail}",
-        backend=backend,
-        api_error=str(last_exc),
+    raise SystemExit(
+        f"Whisper request failed after {MAX_ATTEMPTS} attempts: {last_exc}{last_detail}"
     )
 
 
@@ -458,7 +319,7 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
         return ""
 
 
-def _retry_after(exc: urllib.error.HTTPError) -> Seconds | None:
+def _retry_after(exc: urllib.error.HTTPError) -> float | None:
     header = exc.headers.get("Retry-After") if getattr(exc, "headers", None) else None
     if not header:
         return None
@@ -468,26 +329,11 @@ def _retry_after(exc: urllib.error.HTTPError) -> Seconds | None:
         return None
 
 
-def shift_segments(segments: list[dict[str, Any]], offset_seconds: Seconds) -> list[dict[str, Any]]:
-    """Return a copy of segments with start/end shifted by *offset_seconds*.
+def shift_segments(segments: list[dict], offset_seconds: float) -> list[dict]:
+    """Return a copy of segments with start/end shifted by offset_seconds.
 
-    Each chunk is transcribed in isolation, so Whisper returns 0-based
-    timestamps per chunk; shifting by the chunk's offset stitches them into
-    source time.  A no-op when *offset_seconds* is zero.
-
-    Args:
-        segments: List of dicts with ``"start"``, ``"end"``, and ``"text"``
-            keys (0-based within the chunk).
-        offset_seconds: Seconds to add to every timestamp.
-
-    Returns:
-        A new list of shifted segments (originals are not mutated).
-
-    Example:
-        >>> segs = [{"start": 0, "end": 5, "text": "hi"}]
-        >>> shifted = shift_segments(segs, 120.0)
-        >>> shifted[0]["start"]
-        120.0
+    Each chunk is transcribed in isolation, so Whisper returns 0-based timestamps
+    per chunk; shifting by the chunk's offset stitches them into source time.
     """
     if offset_seconds == 0:
         return segments
@@ -501,9 +347,9 @@ def shift_segments(segments: list[dict[str, Any]], offset_seconds: Seconds) -> l
     ]
 
 
-def _segments_from_response(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _segments_from_response(data: dict) -> list[dict]:
     """Convert Whisper verbose_json into our {start, end, text} segment format."""
-    out: list[dict[str, Any]] = []
+    out: list[dict] = []
     for seg in data.get("segments") or []:
         text = (seg.get("text") or "").strip()
         if not text:
@@ -523,40 +369,20 @@ def _segments_from_response(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def transcribe_chunks(
-    chunks: list[tuple[Path, Seconds]],
-    transcribe_one: Callable[[Path], list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
+    chunks: list[tuple[Path, float]],
+    transcribe_one,
+) -> list[dict]:
     """Transcribe each chunk, shift its segments by the chunk offset, concatenate.
 
     A chunk that fails after its own retries is logged and skipped so one bad
-    slice doesn't discard the whole transcript.  Raises only if *every* chunk
-    fails.
-
-    Security:
-        - API keys are not logged; only backend name is printed
-
-    Args:
-        chunks: List of ``(chunk_path, offset_seconds)`` tuples from
-            :func:`split_audio`.
-        transcribe_one: Callable that takes a chunk path and returns its
-            0-based segments (typically wraps :func:`_transcribe_file`).
-
-    Returns:
-        A merged list of segment dicts with source-relative timestamps.
-
-    Raises:
-        TranscriptionError: If every chunk fails transcription.
-
-    Example:
-        >>> chunks = [(Path("chunk_000.mp3"), 0.0), (Path("chunk_001.mp3"), 120.0)]
-        >>> segments = transcribe_chunks(chunks, my_transcriber)
+    slice doesn't discard the whole transcript. Raises only if every chunk fails.
     """
-    segments: list[dict[str, Any]] = []
+    segments: list[dict] = []
     failures = 0
     for index, (path, offset) in enumerate(chunks):
         try:
             chunk_segments = transcribe_one(path)
-        except TranscriptionError as exc:
+        except SystemExit as exc:
             failures += 1
             print(
                 f"[watch] chunk {index + 1}/{len(chunks)} failed — skipping ({exc})",
@@ -570,65 +396,30 @@ def transcribe_chunks(
         )
 
     if failures == len(chunks):
-        raise TranscriptionError(
-            "Whisper failed on every audio chunk",
-            backend="unknown",
-        )
+        raise SystemExit("Whisper failed on every audio chunk")
     return segments
 
 
-def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict[str, Any]]:
+def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
     if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path, backend=backend)
+        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path, backend=backend)
+        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
     else:
-        raise TranscriptionError(
-            f"Unknown whisper backend: {backend}",
-            backend=backend,
-        )
+        raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
 
 
 def transcribe_video(
     video_path: str,
     audio_out: Path,
-    backend: WhisperBackend | None = None,
+    backend: str | None = None,
     api_key: str | None = None,
-) -> tuple[list[dict[str, Any]], str]:
-    """Run the full transcription flow: extract audio → upload → parse segments.
+) -> tuple[list[dict], str]:
+    """Run the full flow: extract audio → upload → parse segments.
 
-    This is the high-level entry point.  It auto-detects the backend/key if
-    not provided, extracts mono mp3 audio, uploads to the Whisper-compatible
-    API (with automatic chunking for files exceeding 24 MB), and returns
-    segments in the same shape as :func:`transcribe.parse_vtt`.
-
-    Security:
-        - API keys are loaded from environment or ``~/.config/watch/.env``
-        - Keys are never logged in output or error messages
-        - HTTPS is used for all API calls
-
-    Args:
-        video_path: Path to the source video file.
-        audio_out: Destination path for the extracted audio file.
-        backend: Whisper backend (``"groq"`` or ``"openai"``), or ``None``
-            for auto-detection via :func:`load_api_key`.
-        api_key: API key for the backend, or ``None`` for auto-detection.
-
-    Returns:
-        A ``(segments, backend_used)`` tuple where *segments* is a list of
-        dicts with ``"start"``, ``"end"``, and ``"text"`` keys.
-
-    Raises:
-        ConfigError: If no API key is available for either backend.
-        TranscriptionError: If audio extraction, upload, or parsing fails.
-
-    Example:
-        >>> segments, backend = transcribe_video(
-        ...     "video.mp4", Path("audio.mp3"), backend="groq"
-        ... )
-        >>> print(f"Transcribed {len(segments)} segments via {backend}")
+    Returns (segments, backend_used). Raises SystemExit on any failure.
     """
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key()
@@ -637,12 +428,10 @@ def transcribe_video(
 
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
-        raise ConfigError(
+        raise SystemExit(
             "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
             "in the environment or in ~/.config/watch/.env. "
-            f"Run `python3 {setup_py}` to configure.",
-            config_file=Path.home() / ".config" / "watch" / ".env",
-            missing_key="GROQ_API_KEY/OPENAI_API_KEY",
+            f"Run `python3 {setup_py}` to configure."
         )
 
     print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
@@ -670,10 +459,7 @@ def transcribe_video(
         segments = transcribe_chunks(chunks, transcribe_one)
 
     if not segments:
-        raise TranscriptionError(
-            "Whisper returned no transcript segments",
-            backend=backend or "unknown",
-        )
+        raise SystemExit("Whisper returned no transcript segments")
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend

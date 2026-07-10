@@ -13,11 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
-import dataclasses
 from pathlib import Path
-
-from errors import ExtractionError, WatchError
-from video_types import Frame, FrameMetadata, VideoMetadata, Seconds
 
 
 MAX_FPS = 2.0
@@ -43,46 +39,21 @@ DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
-def _scale_filter(resolution: int) -> str:  # noqa: D401
+def _scale_filter(resolution: int) -> str:
     return (
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
 
 
-def _clamp_fps(fps: float, duration_seconds: Seconds, max_frames: int) -> tuple[float, int]:
+def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
     fps = min(fps, MAX_FPS)
     target = min(max_frames, max(1, int(round(fps * duration_seconds))))
     return fps, target
 
 
-def parse_time(value: str | float | int | None) -> Seconds | None:
-    """Parse a time value into seconds.
-
-    Accepts multiple formats commonly used for video timestamps:
-    ``SS`` (plain seconds), ``MM:SS``, or ``HH:MM:SS`` (with optional
-    fractional ``.ms`` component).
-
-    Args:
-        value: Time string, numeric seconds, or ``None``.
-
-    Returns:
-        Time in seconds as a float, or ``None`` when *value* is ``None``
-        or an empty string.
-
-    Raises:
-        WatchError: If the string cannot be parsed as a valid time format.
-
-    Example:
-        >>> parse_time("90.5")
-        90.5
-        >>> parse_time("1:30")
-        90.0
-        >>> parse_time("1:02:30.5")
-        3750.5
-        >>> parse_time(None) is None
-        True
-    """
+def parse_time(value: str | float | int | None) -> float | None:
+    """Parse SS, MM:SS, or HH:MM:SS (with optional .ms) into seconds."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -100,27 +71,10 @@ def parse_time(value: str | float | int | None) -> Seconds | None:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
     except ValueError:
         pass
-    raise WatchError(f"Cannot parse time value: {value!r} (expected SS, MM:SS, or HH:MM:SS)")
+    raise SystemExit(f"Cannot parse time value: {value!r} (expected SS, MM:SS, or HH:MM:SS)")
 
 
-def format_time(seconds: Seconds) -> str:
-    """Format a time value in seconds as a human-readable timestamp.
-
-    Returns ``HH:MM:SS`` when the duration exceeds one hour, otherwise
-    ``MM:SS``.  Fractional seconds are rounded to the nearest integer.
-
-    Args:
-        seconds: Time duration in seconds.
-
-    Returns:
-        Formatted timestamp string.
-
-    Example:
-        >>> format_time(125)
-        '02:05'
-        >>> format_time(3661)
-        '1:01:01'
-    """
+def format_time(seconds: float) -> str:
     total = int(round(seconds))
     hours, rem = divmod(total, 3600)
     minutes, sec = divmod(rem, 60)
@@ -129,37 +83,9 @@ def format_time(seconds: Seconds) -> str:
     return f"{minutes:02d}:{sec:02d}"
 
 
-def get_metadata(video_path: str) -> VideoMetadata:
-    """Probe video file via ffprobe and return typed metadata.
-
-    Runs ``ffprobe`` to extract duration, resolution, codec, file size,
-    and audio presence.  The video file is **not** modified.
-
-    Security:
-        - Only reads metadata; no content is uploaded or transmitted
-        - ``ffprobe`` is invoked via subprocess with no shell expansion
-
-    Args:
-        video_path: Path to the video file.
-
-    Returns:
-        A :class:`VideoMetadata` dataclass with ``duration_seconds``,
-        ``width``, ``height``, ``codec``, ``size_bytes``, and ``has_audio``.
-
-    Raises:
-        ExtractionError: If ``ffprobe`` is not installed or fails on the
-            given file.
-
-    Example:
-        >>> meta = get_metadata("/tmp/video.mp4")
-        >>> print(meta.duration_seconds)
-        142.5
-    """
+def get_metadata(video_path: str) -> dict:
     if shutil.which("ffprobe") is None:
-        raise ExtractionError(
-            "ffprobe is not installed — install with: brew install ffmpeg",
-            video_path=Path(video_path),
-        )
+        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
 
     result = subprocess.run(
         [
@@ -174,12 +100,7 @@ def get_metadata(video_path: str) -> VideoMetadata:
         text=True,
     )
     if result.returncode != 0:
-        raise ExtractionError(
-            f"ffprobe failed: {result.stderr.strip()}",
-            video_path=Path(video_path),
-            return_code=result.returncode,
-            stderr=result.stderr,
-        )
+        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
 
     data = json.loads(result.stdout or "{}")
     streams = data.get("streams", [])
@@ -188,36 +109,18 @@ def get_metadata(video_path: str) -> VideoMetadata:
     audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
     duration = float(fmt.get("duration") or video_stream.get("duration") or 0)
-    return VideoMetadata(
-        duration_seconds=duration,
-        width=video_stream.get("width"),
-        height=video_stream.get("height"),
-        codec=video_stream.get("codec_name"),
-        size_bytes=int(fmt.get("size") or 0),
-        has_audio=audio_stream is not None,
-    )
+    return {
+        "duration_seconds": duration,
+        "width": video_stream.get("width"),
+        "height": video_stream.get("height"),
+        "codec": video_stream.get("codec_name"),
+        "size_bytes": int(fmt.get("size") or 0),
+        "has_audio": audio_stream is not None,
+    }
 
 
-def auto_fps(duration_seconds: Seconds, max_frames: int = 100) -> tuple[float, int]:
-    """Pick fps that targets a sensible frame budget for full-video scans.
-
-    Short videos get denser sampling (up to 1 frame/sec for sub-30s clips)
-    while long videos are capped at *max_frames* total.  The result is
-    clamped to :data:`MAX_FPS` and always yields at least 1 frame.
-
-    Args:
-        duration_seconds: Total duration of the video (or segment).
-        max_frames: Hard cap on total frame count (default: 100).
-
-    Returns:
-        A ``(fps, target_frames)`` tuple where *target_frames* is the
-        expected output count.
-
-    Example:
-        >>> fps, n = auto_fps(10.0, max_frames=50)
-        >>> fps
-        1.0
-    """
+def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
+    """Pick fps that targets a sensible frame budget for full-video scans."""
     if duration_seconds <= 0:
         return 1.0, 1
 
@@ -235,25 +138,8 @@ def auto_fps(duration_seconds: Seconds, max_frames: int = 100) -> tuple[float, i
     return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
 
 
-def auto_fps_focus(duration_seconds: Seconds, max_frames: int = 100) -> tuple[float, int]:
-    """Denser fps budget for user-specified ranges — they are zooming in for detail.
-
-    When the user specifies a start/end window (e.g. ``--start 1:00 --end 2:00``),
-    this function produces a tighter fps so every second of the short segment
-    gets more frames than a full-video scan would.
-
-    Args:
-        duration_seconds: Duration of the focused segment.
-        max_frames: Hard cap on total frame count (default: 100).
-
-    Returns:
-        A ``(fps, target_frames)`` tuple.
-
-    Example:
-        >>> fps, n = auto_fps_focus(5.0, max_frames=50)
-        >>> n >= 10
-        True
-    """
+def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
+    """Denser budget for user-specified ranges — they are zooming in for detail."""
     if duration_seconds <= 0:
         return min(MAX_FPS, 2.0), 2
 
@@ -279,46 +165,11 @@ def extract(
     fps: float,
     resolution: int = 512,
     max_frames: int = 100,
-    start_seconds: Seconds | None = None,
-    end_seconds: Seconds | None = None,
-) -> list[Frame]:
-    """Extract frames at uniform fps via ffmpeg.
-
-    Generates JPEG thumbnails at the specified frame rate, scaled to
-    *resolution* pixels wide.  Existing ``frame_*.jpg`` files in *out_dir*
-    are removed before extraction.
-
-    Security:
-        - Only local file reads; no network calls
-        - ``ffmpeg`` is invoked via subprocess with no shell expansion
-
-    Args:
-        video_path: Path to the video file.
-        out_dir: Output directory for frame JPEGs.
-        fps: Frames per second to extract.
-        resolution: Target width in pixels (height auto-scaled to maintain
-            aspect ratio, default: 512).
-        max_frames: Maximum frames to extract (default: 100).
-        start_seconds: Seek offset in seconds. When set, ``-ss`` is placed
-            before ``-i`` for fast keyframe-based seeking.
-        end_seconds: Stop time in seconds.
-
-    Returns:
-        A list of :class:`Frame` dataclass instances sorted by timestamp.
-
-    Raises:
-        ExtractionError: If ``ffmpeg`` is not installed or extraction fails.
-
-    Example:
-        >>> frames = extract("video.mp4", Path("/tmp/frames"), fps=1.0)
-        >>> len(frames)
-        142
-    """
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> list[dict]:
     if shutil.which("ffmpeg") is None:
-        raise ExtractionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            video_path=Path(video_path),
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
@@ -348,23 +199,17 @@ def extract(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise ExtractionError(
-            f"ffmpeg frame extraction failed: {result.stderr.strip()}",
-            video_path=Path(video_path),
-            command=cmd,
-            return_code=result.returncode,
-            stderr=result.stderr,
-        )
+        raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
     offset = start_seconds or 0.0
     frames = sorted(out_dir.glob("frame_*.jpg"))
     return [
-        Frame(
-            index=i,
-            timestamp_seconds=round(offset + (i / fps if fps > 0 else 0.0), 2),
-            path=str(p),
-            reason="uniform",
-        )
+        {
+            "index": i,
+            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
+            "path": str(p),
+            "reason": "uniform",
+        }
         for i, p in enumerate(frames)
     ]
 
@@ -374,50 +219,19 @@ def extract_scene_candidates(
     out_dir: Path,
     resolution: int = 512,
     max_frames: int | None = 100,
-    start_seconds: Seconds | None = None,
-    end_seconds: Seconds | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
     threshold: float = SCENE_THRESHOLD,
-) -> list[Frame]:
+) -> list[dict]:
     """Extract first frame plus ffmpeg scene-change frames.
 
-    Uses ffmpeg's ``select`` filter with a scene-change threshold to detect
-    visual cuts.  The first frame is always included.  When ``max_frames`` is
-    set, ``-frames:v`` lets ffmpeg stop decoding once it has emitted that many
-    frames (early exit) and avoids writing extras that would only be deleted
-    afterwards.  ``None`` (uncapped "complete" detail) keeps every detected
-    shot, as the user explicitly opted in.
-
-    Security:
-        - Only local file reads; no network calls
-
-    Args:
-        video_path: Path to the video file.
-        out_dir: Output directory for frame JPEGs.
-        resolution: Target width in pixels (default: 512).
-        max_frames: Maximum frames to extract, or ``None`` for unbounded
-            (default: 100).
-        start_seconds: Seek offset in seconds.
-        end_seconds: Stop time in seconds.
-        threshold: Scene-change sensitivity 0–1 (default: :data:`SCENE_THRESHOLD`).
-            Lower values detect more cuts.
-
-    Returns:
-        A list of :class:`Frame` dataclass instances.  The first frame has
-        ``reason="first-frame"``; subsequent frames have ``reason="scene-change"``.
-
-    Raises:
-        ExtractionError: If ``ffmpeg`` is not installed or extraction fails.
-
-    Example:
-        >>> frames = extract_scene_candidates("video.mp4", Path("/tmp/shots"))
-        >>> frames[0].reason
-        'first-frame'
+    When ``max_frames`` is set, ``-frames:v`` lets ffmpeg stop decoding once it
+    has emitted that many frames (early exit) and avoids writing extras that we
+    would only delete afterwards. ``None`` (uncapped "complete" detail) keeps
+    every detected shot, as the user explicitly opted in.
     """
     if shutil.which("ffmpeg") is None:
-        raise ExtractionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            video_path=Path(video_path),
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
@@ -435,11 +249,11 @@ def extract_scene_candidates(
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
 
-    vf = f"select='eq(n\,0)+gt(scene\,{threshold})',{_scale_filter(resolution)},showinfo"
+    vf = f"select='eq(n\\,0)+gt(scene\\,{threshold})',{_scale_filter(resolution)},showinfo"
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-fps_mode", "vfr",
+        "-vsync", "vfr",
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -449,26 +263,20 @@ def extract_scene_candidates(
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise ExtractionError(
-            f"ffmpeg scene extraction failed: {result.stderr.strip()}",
-            video_path=Path(video_path),
-            command=cmd,
-            return_code=result.returncode,
-            stderr=result.stderr,
-        )
+        raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
     offset = start_seconds or 0.0
     timestamps = [round(offset + float(match.group(1)), 2) for match in SHOWINFO_TS_RE.finditer(result.stderr)]
     frames = sorted(out_dir.glob("frame_*.jpg"))
-    out: list[Frame] = []
+    out: list[dict] = []
     for i, path in enumerate(frames):
         ts = timestamps[i] if i < len(timestamps) else offset
-        out.append(Frame(
-            index=i,
-            timestamp_seconds=ts,
-            path=str(path),
-            reason="first-frame" if i == 0 else "scene-change",
-        ))
+        out.append({
+            "index": i,
+            "timestamp_seconds": ts,
+            "path": str(path),
+            "reason": "first-frame" if i == 0 else "scene-change",
+        })
     return out
 
 
@@ -484,29 +292,10 @@ def _even_indices(count: int, n: int) -> list[int]:
     return [round(i * (count - 1) / (n - 1)) for i in range(n)]
 
 
-def parse_timestamps(value: str | None) -> list[Seconds]:
-    """Parse a comma-separated list of timestamps into seconds.
-
-    Each token is parsed via :func:`parse_time` (supports ``SS``, ``MM:SS``,
-    ``HH:MM:SS``).  Empty tokens are skipped; duplicates are removed.  The
-    result is always sorted ascending.
-
-    Args:
-        value: Comma-separated time string (e.g. ``"0:30, 2:15, 1:00:00"``),
-            or ``None``.
-
-    Returns:
-        Sorted, de-duplicated list of seconds.
-
-    Raises:
-        WatchError: If any non-empty token cannot be parsed.
-
-    Example:
-        >>> parse_timestamps("1:30, 0:45, 1:30")
-        [45.0, 90.0]
-        >>> parse_timestamps(None)
-        []
-    """
+def parse_timestamps(value: str | None) -> list[float]:
+    """Parse a comma-separated list of times (SS, MM:SS, HH:MM:SS) into a
+    sorted, de-duplicated list of seconds. Empty/blank tokens are skipped;
+    an unparseable token raises (via :func:`parse_time`)."""
     if not value:
         return []
     out: list[float] = []
@@ -520,87 +309,37 @@ def parse_timestamps(value: str | None) -> list[Seconds]:
     return sorted(set(out))
 
 
-def merge_frames(primary: list[Frame], pinned: list[Frame]) -> list[Frame]:
+def merge_frames(primary: list[dict], pinned: list[dict]) -> list[dict]:
     """Combine two frame lists into one chronological list and reindex 0..n-1.
 
-    ``pinned`` frames (typically transcript cue frames) are never dropped —
-    this is a plain union, so the frame budget cap must be enforced upstream
-    by reserving budget for the cues.
-
-    Args:
-        primary: Main list of extracted frames.
-        pinned: Pinned frames (e.g. transcript cues) that must always
-            appear in the final output.
-
-    Returns:
-        A merged, sorted (by ``timestamp_seconds``) list with sequential
-        ``index`` values starting from 0.
-
-    Example:
-        >>> from scripts.types import Frame
-        >>> a = [Frame(0, 1.0, "a.jpg", "uniform")]
-        >>> b = [Frame(0, 0.5, "b.jpg", "transcript-cue")]
-        >>> merged = merge_frames(a, b)
-        >>> len(merged)
-        2
+    ``pinned`` frames (transcript cues) are never dropped — this is a plain
+    union, so the cap is enforced upstream by reserving budget for the cues.
     """
-    merged = sorted([*primary, *pinned], key=lambda f: f.timestamp_seconds)
-    result = [
-        dataclasses.replace(frame, index=i)
-        for i, frame in enumerate(merged)
-    ]
-    return result
+    merged = sorted([*primary, *pinned], key=lambda f: f["timestamp_seconds"])
+    for i, frame in enumerate(merged):
+        frame["index"] = i
+    return merged
 
 
 def extract_at_timestamps(
     video_path: str,
     out_dir: Path,
-    timestamps: list[Seconds],
+    timestamps: list[float],
     resolution: int = 512,
     max_frames: int | None = None,
-    start_seconds: Seconds | None = None,
-    end_seconds: Seconds | None = None,
-) -> tuple[list[Frame], FrameMetadata]:
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> tuple[list[dict], dict]:
     """Grab exactly one frame at each requested timestamp (transcript cues).
 
-    Timestamps are absolute source seconds.  Any falling outside an active
-    ``[start, end]`` focus window are dropped.  Files use a ``cue_*.jpg``
-    prefix so they sit alongside detail-engine ``frame_*.jpg`` output without
-    either clobbering the other.  When more cues than ``max_frames`` survive,
-    they are even-sampled (first + last kept) before extraction.
-
-    Security:
-        - Only local file reads; no network calls
-
-    Args:
-        video_path: Path to the video file.
-        out_dir: Output directory for cue JPEG files.
-        timestamps: List of absolute timestamps in seconds to extract.
-        resolution: Target width in pixels (default: 512).
-        max_frames: Maximum cues to extract, or ``None`` for all (default: ``None``).
-        start_seconds: Focus window start — cues before this are dropped.
-        end_seconds: Focus window end — cues after this are dropped.
-
-    Returns:
-        A tuple of ``(frames, metadata)`` where *frames* is a list of
-        :class:`Frame` instances with ``reason="transcript-cue"`` and
-        *metadata* is a :class:`FrameMetadata` summarising extraction stats.
-
-    Raises:
-        ExtractionError: If ``ffmpeg`` is not installed.
-
-    Example:
-        >>> frames, meta = extract_at_timestamps(
-        ...     "video.mp4", Path("/tmp/cues"), [10.0, 30.5, 60.0]
-        ... )
-        >>> meta.engine
-        'timestamps'
+    Timestamps are absolute source seconds. Any falling outside an active
+    ``[start, end]`` focus window are dropped. Files use a ``cue_*.jpg`` prefix
+    so they sit alongside detail-engine ``frame_*.jpg`` output without either
+    clobbering the other. When more cues than ``max_frames`` survive, they are
+    even-sampled (first + last kept) before extraction.
     """
     if shutil.which("ffmpeg") is None:
-        raise ExtractionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            video_path=Path(video_path),
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("cue_*.jpg"):
@@ -617,7 +356,7 @@ def extract_at_timestamps(
     else:
         points = in_window
 
-    out: list[Frame] = []
+    out: list[dict] = []
     for t in points:
         path = out_dir / f"cue_{len(out):04d}.jpg"
         cmd = [
@@ -634,24 +373,24 @@ def extract_at_timestamps(
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0 and path.exists():
-            out.append(Frame(
-                index=len(out),
-                timestamp_seconds=t,
-                path=str(path),
-                reason="transcript-cue",
-            ))
+            out.append({
+                "index": len(out),
+                "timestamp_seconds": t,
+                "path": str(path),
+                "reason": "transcript-cue",
+            })
 
-    meta = FrameMetadata(
-        engine="timestamps",
-        candidate_count=len(requested),
-        selected_count=len(out),
-        dropped_out_of_window=dropped,
-        fallback=False,
-    )
+    meta = {
+        "engine": "timestamps",
+        "candidate_count": len(requested),
+        "selected_count": len(out),
+        "dropped_out_of_window": dropped,
+        "fallback": False,
+    }
     return out, meta
 
 
-def _even_sample(candidates: list[Frame], n: int) -> list[Frame]:
+def _even_sample(candidates: list[dict], n: int) -> list[dict]:
     """Pick ``n`` evenly-spaced candidates (always including first and last),
     delete the JPEGs we drop, and reindex the survivors 0..len-1.
 
@@ -661,17 +400,16 @@ def _even_sample(candidates: list[Frame], n: int) -> list[Frame]:
     """
     selected = [candidates[i] for i in _even_indices(len(candidates), n)]
 
-    keep_paths = {sel.path for sel in selected}
+    keep_paths = {sel["path"] for sel in selected}
     for cand in candidates:
-        if cand.path not in keep_paths:
+        if cand["path"] not in keep_paths:
             try:
-                Path(cand.path).unlink()
+                Path(cand["path"]).unlink()
             except OSError:
                 pass
-    return [
-        dataclasses.replace(frame, index=i)
-        for i, frame in enumerate(selected)
-    ]
+    for i, frame in enumerate(selected):
+        frame["index"] = i
+    return selected
 
 
 def _frame_delta(a: bytes, b: bytes) -> float:
@@ -723,41 +461,24 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
 
 
 def dedupe_perceptual(
-    candidates: list[Frame], threshold: float = DEDUP_THRESHOLD
-) -> tuple[list[Frame], int]:
+    candidates: list[dict], threshold: float = DEDUP_THRESHOLD
+) -> tuple[list[dict], int]:
     """Drop near-identical frames from a chronological candidate list.
 
     Thumbnails the extracted JPEGs and greedily removes frames whose mean
-    per-pixel difference from the last kept one is within *threshold*.  This
-    collapses visually identical shots (e.g. a static slide held for several
-    seconds) while preserving genuine content changes.
-
-    Security:
-        - Only reads local JPEG files; no network calls
-
-    Args:
-        candidates: Chronologically sorted list of :class:`Frame` instances.
-        threshold: Mean per-pixel difference (0–255) below which two frames
-            are considered identical (default: :data:`DEDUP_THRESHOLD`).
-
-    Returns:
-        A ``(survivors, dropped_count)`` tuple.  When thumbnails are
-        unavailable (ffmpeg error) or there are fewer than two candidates,
-        the input list is returned unchanged with ``dropped_count=0``.
-
-    Example:
-        >>> survivors, n = dedupe_perceptual(frames, threshold=2.0)
-        >>> print(f"dropped {n} identical frames")
+    per-pixel difference from the last kept one is within ``threshold``. Returns
+    ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
+    unavailable or there are fewer than two candidates.
     """
     if len(candidates) <= 1:
         return candidates, 0
-    thumbs = _thumb_frames([Path(c.path) for c in candidates])
+    thumbs = _thumb_frames([Path(c["path"]) for c in candidates])
     return _dedupe_by_deltas(candidates, thumbs, threshold)
 
 
 def _dedupe_by_deltas(
-    candidates: list[Frame], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
-) -> tuple[list[Frame], int]:
+    candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
+) -> tuple[list[dict], int]:
     """Greedily drop frames within ``threshold`` mean per-pixel difference of the
     last *kept* frame. Deletes dropped JPEGs and reindexes survivors 0..n-1 (same
     cleanup contract as :func:`_even_sample`). Fail-open: if ``thumbs`` does not
@@ -768,7 +489,7 @@ def _dedupe_by_deltas(
 
     kept = [candidates[0]]
     last = thumbs[0]
-    dropped: list[Frame] = []
+    dropped: list[dict] = []
     for cand, thumb in zip(candidates[1:], thumbs[1:]):
         if _frame_delta(thumb, last) <= threshold:
             dropped.append(cand)
@@ -778,14 +499,12 @@ def _dedupe_by_deltas(
 
     for cand in dropped:
         try:
-            Path(cand.path).unlink()
+            Path(cand["path"]).unlink()
         except OSError:
             pass
-    result = [
-        dataclasses.replace(frame, index=i)
-        for i, frame in enumerate(kept)
-    ]
-    return result, len(dropped)
+    for i, frame in enumerate(kept):
+        frame["index"] = i
+    return kept, len(dropped)
 
 
 def extract_scene_or_uniform(
@@ -795,51 +514,21 @@ def extract_scene_or_uniform(
     target_frames: int,
     resolution: int = 512,
     max_frames: int | None = 100,
-    start_seconds: Seconds | None = None,
-    end_seconds: Seconds | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
     dedup: bool = True,
-) -> tuple[list[Frame], FrameMetadata]:
-    """Prefer scene selection, falling back to uniform when the video is static.
+) -> tuple[list[dict], dict]:
+    """Prefer scene selection, falling back to uniform only when the video is
+    effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots).
 
     Scene cuts are detected across the *whole* range (uncapped), near-identical
     frames are dropped (:func:`dedupe_perceptual`, unless ``dedup`` is False),
     and the survivors are even-sampled down to ``max_frames`` via
-    :func:`_even_sample`.  When fewer than ``SCENE_MIN_FRAMES`` distinct shots
-    are detected (e.g. a screen recording or talking-head video), falls back to
-    uniform fps extraction.
-
-    This costs a full decode but guarantees coverage spans the entire clip —
-    capping detection with ``-frames:v`` instead would keep only the first
-    cuts and drop the tail of long videos.
-
-    Security:
-        - Only local file reads; no network calls
-
-    Args:
-        video_path: Path to the video file.
-        out_dir: Output directory for frame JPEGs.
-        fps: Fps used for the uniform fallback path.
-        target_frames: Target frame count for the uniform fallback.
-        resolution: Target width in pixels (default: 512).
-        max_frames: Hard cap on output frames, or ``None`` for uncapped
-            (default: 100).
-        start_seconds: Seek offset in seconds.
-        end_seconds: Stop time in seconds.
-        dedup: Enable perceptual deduplication (default: ``True``).
-
-    Returns:
-        A ``(frames, metadata)`` tuple.  *metadata.engine* is ``"scene"``
-        when scene detection succeeded or ``"uniform"`` as a fallback.
-
-    Raises:
-        ExtractionError: If ``ffmpeg`` is not installed or extraction fails.
-
-    Example:
-        >>> frames, meta = extract_scene_or_uniform(
-        ...     "video.mp4", Path("/tmp/out"), fps=1.0, target_frames=60
-        ... )
-        >>> meta.engine in ("scene", "uniform")
-        True
+    :func:`_even_sample`, exactly like the keyframe engine. This costs a full
+    decode, but it guarantees coverage spans the entire clip — capping detection
+    with ``-frames:v`` instead would keep only the first ``max_frames`` cuts and
+    drop the tail of long videos (and could even fall below ``SCENE_MIN_FRAMES``
+    and misfire the uniform fallback on a cut-heavy clip).
     """
     scene_frames = extract_scene_candidates(
         video_path,
@@ -854,13 +543,13 @@ def extract_scene_or_uniform(
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
-        return selected, FrameMetadata(
-            engine="scene",
-            candidate_count=scene_count,
-            deduped_count=n_dropped,
-            selected_count=len(selected),
-            fallback=False,
-        )
+        return selected, {
+            "engine": "scene",
+            "candidate_count": scene_count,
+            "deduped_count": n_dropped,
+            "selected_count": len(selected),
+            "fallback": False,
+        }
 
     fallback_cap = target_frames if max_frames is None else min(max_frames, target_frames)
     frames = extract(
@@ -875,13 +564,13 @@ def extract_scene_or_uniform(
     n_dropped = 0
     if dedup:
         frames, n_dropped = dedupe_perceptual(frames)
-    return frames, FrameMetadata(
-        engine="uniform",
-        candidate_count=scene_count,
-        deduped_count=n_dropped,
-        selected_count=len(frames),
-        fallback=True,
-    )
+    return frames, {
+        "engine": "uniform",
+        "candidate_count": scene_count,
+        "deduped_count": n_dropped,
+        "selected_count": len(frames),
+        "fallback": True,
+    }
 
 
 def extract_keyframes(
@@ -889,52 +578,20 @@ def extract_keyframes(
     out_dir: Path,
     resolution: int = 512,
     max_frames: int | None = 50,
-    start_seconds: Seconds | None = None,
-    end_seconds: Seconds | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
     dedup: bool = True,
-) -> tuple[list[Frame], FrameMetadata]:
+) -> tuple[list[dict], dict]:
     """Decode only keyframes (I-frames) — the cheap, near-instant tier.
 
-    ``-skip_frame nokey`` makes ffmpeg reconstruct only keyframes, skipping
-    all P/B frames.  Encoders emit keyframes at scene cuts, so these already
-    approximate "distinct moments" at a fraction of the decode cost.
-
-    Near-identical frames are dropped (:func:`dedupe_perceptual`, unless
-    ``dedup`` is False); over-cap → even-sample first→last; too few
-    keyframes (< :data:`KEYFRAME_MIN`) → uniform fallback.
-
-    Security:
-        - Only local file reads; no network calls
-
-    Args:
-        video_path: Path to the video file.
-        out_dir: Output directory for frame JPEGs.
-        resolution: Target width in pixels (default: 512).
-        max_frames: Maximum frames to output, or ``None`` for uncapped
-            (default: 50).
-        start_seconds: Seek offset in seconds.
-        end_seconds: Stop time in seconds.
-        dedup: Enable perceptual deduplication (default: ``True``).
-
-    Returns:
-        A ``(frames, metadata)`` tuple.  *metadata.engine* is ``"keyframe"``
-        when keyframe extraction succeeded or ``"uniform"`` as a fallback.
-
-    Raises:
-        ExtractionError: If ``ffmpeg`` is not installed or extraction fails.
-
-    Example:
-        >>> frames, meta = extract_keyframes(
-        ...     "video.mp4", Path("/tmp/keys"), max_frames=30
-        ... )
-        >>> meta.engine
-        'keyframe'
+    ``-skip_frame nokey`` makes ffmpeg reconstruct only keyframes, skipping all
+    P/B frames. Encoders emit keyframes at scene cuts, so these already
+    approximate "distinct moments". Near-identical frames are dropped
+    (:func:`dedupe_perceptual`, unless ``dedup`` is False); over-cap →
+    even-sample first→last; too few keyframes → uniform fallback.
     """
     if shutil.which("ffmpeg") is None:
-        raise ExtractionError(
-            "ffmpeg is not installed — install with: brew install ffmpeg",
-            video_path=Path(video_path),
-        )
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
@@ -955,42 +612,36 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-fps_mode", "vfr",
+        "-vsync", "vfr",
         "-q:v", "4",
         output_pattern,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise ExtractionError(
-            f"ffmpeg keyframe extraction failed: {result.stderr.strip()}",
-            video_path=Path(video_path),
-            command=cmd,
-            return_code=result.returncode,
-            stderr=result.stderr,
-        )
+        raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
 
     offset = start_seconds or 0.0
     timestamps = [round(offset + float(m.group(1)), 2) for m in SHOWINFO_TS_RE.finditer(result.stderr)]
     files = sorted(out_dir.glob("frame_*.jpg"))
-    candidates: list[Frame] = []
+    candidates: list[dict] = []
     for i, path in enumerate(files):
         ts = timestamps[i] if i < len(timestamps) else offset
-        candidates.append(Frame(
-            index=i,
-            timestamp_seconds=ts,
-            path=str(path),
-            reason="keyframe",
-        ))
+        candidates.append({
+            "index": i,
+            "timestamp_seconds": ts,
+            "path": str(path),
+            "reason": "keyframe",
+        })
 
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
         for cand in candidates:
             try:
-                Path(cand.path).unlink()
+                Path(cand["path"]).unlink()
             except OSError:
                 pass
         meta = get_metadata(video_path)
-        full_duration = meta.duration_seconds
+        full_duration = meta["duration_seconds"]
         eff_start = start_seconds or 0.0
         eff_end = end_seconds if end_seconds is not None else full_duration
         eff_duration = max(0.0, eff_end - eff_start)
@@ -1008,13 +659,13 @@ def extract_keyframes(
         n_dropped = 0
         if dedup:
             frames_out, n_dropped = dedupe_perceptual(frames_out)
-        return frames_out, FrameMetadata(
-            engine="uniform",
-            candidate_count=len(candidates),
-            deduped_count=n_dropped,
-            selected_count=len(frames_out),
-            fallback=True,
-        )
+        return frames_out, {
+            "engine": "uniform",
+            "candidate_count": len(candidates),
+            "deduped_count": n_dropped,
+            "selected_count": len(frames_out),
+            "fallback": True,
+        }
 
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +
     # last always kept). ``max_frames is None`` (uncapped) keeps every keyframe.
@@ -1022,13 +673,13 @@ def extract_keyframes(
     deduped, n_dropped = dedupe_perceptual(candidates) if dedup else (candidates, 0)
     cap = len(deduped) if max_frames is None else max_frames
     selected = _even_sample(deduped, cap)
-    return selected, FrameMetadata(
-        engine="keyframe",
-        candidate_count=candidate_count,
-        deduped_count=n_dropped,
-        selected_count=len(selected),
-        fallback=False,
-    )
+    return selected, {
+        "engine": "keyframe",
+        "candidate_count": candidate_count,
+        "deduped_count": n_dropped,
+        "selected_count": len(selected),
+        "fallback": False,
+    }
 
 
 if __name__ == "__main__":
@@ -1070,7 +721,7 @@ if __name__ == "__main__":
     meta = get_metadata(video)
     start_sec = parse_time(start_arg)
     end_sec = parse_time(end_arg)
-    full_duration = meta.duration_seconds
+    full_duration = meta["duration_seconds"]
 
     effective_start = start_sec if start_sec is not None else 0.0
     effective_end = end_sec if end_sec is not None else full_duration

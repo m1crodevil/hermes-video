@@ -44,8 +44,8 @@ With hermes-video `/watch` you can paste a URL or a local path, ask a question, 
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
-5. **Frames + transcript are handed to MiMo V2.5 via OpenCode Zen.** The script encodes frames as base64, builds a multimodal message with the transcript, and sends it to MiMo for analysis.
-6. **MiMo answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
+5. **Frames + transcript are handed to your agent.** The script prints frame paths with timestamps and the transcript. Your agent reads each frame as an image and combines it with the transcript.
+6. **Your agent answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
 7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, delete it.
 
 ## Frame budget — why it matters
@@ -170,15 +170,9 @@ Other knobs:
 │       ├── transcribe.py         # VTT parsing + Whisper orchestration
 │       ├── whisper.py            # Groq / OpenAI clients
 │       ├── config.py             # shared config
-│       ├── setup.py              # preflight + installer
-│       ├── opencode_client.py    # MiMo V2.5 API client
-│       ├── hermes_memory.py      # memory integration
-│       └── hermes_cron.py        # cron integration
+│       └── setup.py              # preflight + installer
 ├── tests/                        # pytest suite
-├── docs/                         # plans and documentation
 ├── install.sh                    # install script
-├── manifest.json                 # skill manifest
-├── SECURITY.md                   # security info
 └── LICENSE                       # MIT
 ```
 
@@ -194,7 +188,7 @@ bash skills/watch/scripts/build-skill.sh
 
 ## Open source
 
-MIT license. Built on `yt-dlp`, `ffmpeg`, and [MiMo V2.5](https://huggingface.co/XiaomiMiMo/MiMo-V2.5) via [OpenCode Zen](https://opencode.ai). Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
+MIT license. Built on `yt-dlp`, `ffmpeg`. Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
 
 Original: [bradautomates/claude-video](https://github.com/bradautomates/claude-video)
 
