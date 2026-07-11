@@ -7,6 +7,7 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +22,26 @@ from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, ext
 from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+def _cleanup_video(video_path: str | None, downloaded: bool, keep: bool) -> None:
+    """Delete the downloaded video file to save disk space.
+
+    Only deletes when:
+    - video_path is set
+    - The file was actually downloaded (not a local file)
+    - --keep-video was NOT passed
+    """
+    if not video_path or not downloaded or keep:
+        return
+    p = Path(video_path)
+    if p.exists():
+        size_mb = p.stat().st_size / (1024 * 1024)
+        try:
+            p.unlink()
+            print(f"[watch] cleaned up video file ({size_mb:.0f} MB)", file=sys.stderr)
+        except OSError as exc:
+            print(f"[watch] warning: could not delete video: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -66,6 +87,11 @@ def main() -> int:
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
              "frames (static screen recordings, held slides, paused video) instead of collapsing them.",
+    )
+    ap.add_argument(
+        "--keep-video",
+        action="store_true",
+        help="Keep the downloaded video file after frame extraction (default: delete to save disk).",
     )
     ap.add_argument(
         "--output",
@@ -279,6 +305,22 @@ def main() -> int:
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
+    # ── Cleanup ─────────────────────────────────────────────────────
+    # Delete downloaded video — everything that needed it (frames, whisper
+    # audio) is done.  Local files are never touched.
+    _cleanup_video(video_path, dl.get("downloaded", False), args.keep_video)
+
+    # Clean up whisper audio chunks to save a few extra MB.
+    audio_tmp = work / "audio.mp3"
+    if audio_tmp.exists():
+        try:
+            audio_tmp.unlink()
+        except OSError:
+            pass
+    chunks_dir = work / "audio" / "chunks"
+    if chunks_dir.exists():
+        shutil.rmtree(chunks_dir, ignore_errors=True)
+
     info = dl.get("info") or {}
 
     # ── Build structured report ──────────────────────────────────────
@@ -345,7 +387,12 @@ def main() -> int:
         # Footer
         print()
         print("---")
-        print(f"_Work dir: `{work}` — delete when done._")
+        footer = (
+            f"_Work dir: `{work}` — frames + transcript retained, video auto-cleaned._"
+            if not args.keep_video else
+            f"_Work dir: `{work}` — all files retained (--keep-video)._"
+        )
+        print(footer)
 
     if output_mode in ("json", "both"):
         json_path = work / "report.json"
