@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.2.1"
+version: "1.3.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -108,7 +108,9 @@ If they skip, keep the recommended default. Do not re-ask when `SETUP_COMPLETE=t
 
 ### Structured mode reference
 
-`python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, whisper_backend, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use `can_proceed`/`first_run` to decide whether to run; **ignore `needs_key`** — Whisper is handled post-run, not here.
+`python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, ytdlp_deps, whisper_backend, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use `can_proceed`/`first_run` to decide whether to run; **ignore `needs_key`** — Whisper is handled post-run, not here.
+
+`ytdlp_deps` is `{deno: bool, curl_cffi: bool}` — YouTube 2026 requires both for video downloads. If either is `false`, video downloads will 403 (transcripts still work). The installer prints install hints for missing deps.
 
 ## Structured output (Pydantic models)
 
@@ -228,6 +230,8 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 **Step 4 — view every frame the script lists.** The script outputs frame paths as JPEG files.
 
+**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change and keyframe engines name files by extraction index (`frame_0211.jpg`, `frame_0345.jpg`, etc.), not by timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first to see what actually exists, then pick 8-15 representative frames spread across the list for `vision_analyze`.
+
 **Pitfall (Hermes):** The `read_file` tool cannot handle binary images — it returns "Cannot read binary file". Use `vision_analyze` instead to inspect frame images:
 
 ```bash
@@ -245,7 +249,7 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 6 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 6 — follow-ups.** The downloaded video is already auto-deleted (see "Video cleanup and disk usage"). The frames and transcript remain in the working directory. If the user asks follow-ups about this video, answer from the frames and transcript you already have in context — do NOT re-run the script. If no follow-ups are expected, clean up with `rm -rf <dir>`.
 
 ## Detail and frames
 

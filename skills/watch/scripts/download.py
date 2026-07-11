@@ -45,6 +45,41 @@ def _has_chrome_cookies() -> bool:
     return False
 
 
+def _yt_dlp_network_opts() -> list[str]:
+    """Network-related yt-dlp flags for YouTube 2026+ reliability.
+
+    YouTube now requires:
+      1. A JS runtime (deno) for challenge solving during extraction
+      2. Browser impersonation (curl_cffi) to avoid bot detection
+      3. Cookies (optional, only when deno is present for n-signature solving)
+
+    Without these, metadata + subtitles may still work but video downloads
+    fail with HTTP 403 Forbidden.
+
+    Install: deno (curl -fsSL https://deno.land/install.sh | sh)
+    Install: curl_cffi (pip install --break-system-packages curl-cffi)
+    """
+    opts: list[str] = []
+    has_deno = shutil.which("deno") is not None
+
+    # JS runtime for YouTube challenge solving (required since mid-2025)
+    if has_deno:
+        opts += ["--js-runtimes", "deno"]
+
+    # Browser impersonation via curl_cffi (bypasses bot detection)
+    try:
+        import curl_cffi  # noqa: F401
+        opts += ["--impersonate", "chrome"]
+    except ImportError:
+        pass
+
+    # Chrome cookies for authenticated sessions (only when deno is present)
+    if has_deno and _has_chrome_cookies():
+        opts += ["--cookies-from-browser", "chrome"]
+
+    return opts
+
+
 def _common_yt_dlp_opts(lang: str = "en.*") -> list[str]:
     """Shared yt-dlp flags for subtitle downloads."""
     return [
@@ -56,19 +91,6 @@ def _common_yt_dlp_opts(lang: str = "en.*") -> list[str]:
         "--sleep-subtitles", SLEEP_SUBTITLES,
     ]
 
-
-def _cookie_opts() -> list[str]:
-    """Return cookie flags if Chrome cookies are available and deno is installed.
-
-    Chrome cookies + no JS runtime = YouTube blocks format extraction.
-    Only use cookies when deno (or another JS runtime) is available.
-    """
-    if not _has_chrome_cookies():
-        return []
-    # Only use cookies if deno is available for n-signature solving
-    if shutil.which("deno"):
-        return ["--cookies-from-browser", "chrome"]
-    return []
 
 
 def resolve_local(path: str) -> dict:
@@ -134,8 +156,8 @@ def fetch_metadata_only(url: str, out_dir: Path) -> dict:
         "--", url,
     ]
 
-    # Use cookies if available
-    cmd[1:1] = _cookie_opts()
+    # YouTube 2026: impersonate + JS runtime for metadata extraction
+    cmd[1:1] = _yt_dlp_network_opts()
 
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     return _read_info(out_dir / "video.info.json", url)
@@ -244,9 +266,9 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--", url,
     ]
     
-    # Use cookies if available
-    cmd[1:1] = _cookie_opts()
-    
+    # YouTube 2026: impersonate + JS runtime for subtitle extraction
+    cmd[1:1] = _yt_dlp_network_opts()
+
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     subtitle = _pick_subtitle(out_dir, best_lang)
     
@@ -316,9 +338,8 @@ def download_url(
         cmd[1:1] = _common_yt_dlp_opts()
         cmd[1:1] = ["--sub-format", "json3/best"]
 
-    # NOTE: cookies NOT used for video download — they cause 403 Forbidden
-    # because YouTube gives authenticated format URLs that expire quickly.
-    # Cookies are only useful for subtitle downloads (handled in fetch_captions).
+    # YouTube 2026: impersonate + JS runtime + cookies for video download
+    cmd[1:1] = _yt_dlp_network_opts()
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
