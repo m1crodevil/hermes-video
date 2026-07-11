@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.3.0"
+version: "1.5.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -56,7 +56,7 @@ fi
 **YouTube 2026 deps (required for video downloads, not just transcripts):**
 - **deno** — JS runtime for YouTube challenge solving. Without it, video downloads get HTTP 403. Install: `curl -fsSL https://deno.land/install.sh | sh` then add `~/.deno/bin` to PATH.
 - **curl_cffi** — browser impersonation to bypass bot detection. Install: `pip install --break-system-packages curl-cffi` (or `uv pip install --python <venv-python> curl-cffi` for venvs without pip).
-- The setup script (`setup.py --json`) reports these in the `ytdlp_deps` field and prints install hints when missing. It also auto-creates `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno`.
+- The setup script (`setup.py --json`) reports these in the `ytdlp_deps` field and **auto-installs** missing deps (deno via install.sh, curl_cffi via uv/pip). It also auto-creates `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno`.
 - Without these, transcripts (captions) still work — only video download fails with 403. See `references/youtube-403-download.md` for the full pattern.
 
 ### First run in session
@@ -92,7 +92,7 @@ Idempotent — safe to re-run:
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-On macOS with Homebrew, auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, prints exact install commands. Scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
+On macOS with Homebrew, auto-installs `ffmpeg` and `yt-dlp`. On Linux (Debian/Ubuntu with sudo), auto-installs ffmpeg via apt, yt-dlp standalone binary, deno, and curl_cffi. Without sudo, yt-dlp + deno still auto-install to `~/.local/bin` and `~/.deno/bin`. Scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
 
 ### First-run watch preference (optional, one-time)
 
@@ -326,7 +326,7 @@ Use `--keep-video` to retain the downloaded video when needed for follow-up anal
 ## Failure modes and handling
 
 - **Setup preflight failed (exit 2)** → missing binaries. Run `python3 "${SKILL_DIR}/scripts/setup.py"` to install.
-- **Video download fails with HTTP 403** → YouTube 2026 requires deno (JS runtime) + curl_cffi (browser impersonation). Check `ytdlp_deps` in `setup.py --json` output. If missing, install deno (`curl -fsSL https://deno.land/install.sh | sh`) and curl_cffi (`pip install --break-system-packages curl-cffi`). Transcripts still work without these — only video download is affected. See `references/youtube-403-download.md`.
+- **Video download fails with HTTP 403** → YouTube 2026 requires deno (JS runtime) + curl_cffi (browser impersonation). Check `ytdlp_deps` in `setup.py --json` output. If missing, run `python3 "${SKILL_DIR}/scripts/setup.py"` — it auto-installs both. Transcripts still work without these — only video download is affected. See `references/youtube-403-download.md`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). **Now** ask the user if they want to set up Whisper (see Step 3). Proceed frames-only if they decline.
 - **Transcript in wrong language** → The script now auto-detects video language from metadata and downloads subtitles in the correct language (Indonesian, Spanish, etc.). If the transcript still appears in the wrong language, check that `scripts/language.py` exists and `download.py` is v1.2+. See `references/language-detection-pitfall.md`.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.

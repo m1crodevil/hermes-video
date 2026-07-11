@@ -56,6 +56,19 @@ OPENAI_API_KEY=
 # Default watch behavior (the /watch first-run wizard sets this for you):
 # WATCH_DETAIL=balanced            # transcript | efficient | balanced | token-burner
 """
+def _write_env(content: str) -> None:
+    """Write .env file atomically with 0o600 permissions.
+
+    Avoids TOCTOU race: file is created with correct permissions
+    from the start, never world-readable.
+    """
+    fd = os.open(str(CONFIG_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def _which(name: str) -> str | None:
@@ -196,11 +209,7 @@ def _scaffold_env() -> bool:
     if CONFIG_FILE.exists():
         return False
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(ENV_TEMPLATE, encoding="utf-8")
-    try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+    _write_env(ENV_TEMPLATE)
     return True
 
 
@@ -219,13 +228,9 @@ def _write_setup_complete() -> None:
                 return
         if existing and not existing.endswith("\n"):
             existing += "\n"
-        CONFIG_FILE.write_text(existing + "SETUP_COMPLETE=true\n", encoding="utf-8")
+        _write_env(existing + "SETUP_COMPLETE=true\n")
     else:
-        CONFIG_FILE.write_text(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n", encoding="utf-8")
-    try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+        _write_env(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n")
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +370,22 @@ def _install_deno() -> bool:
         return True
 
     print("[setup] installing deno...", file=sys.stderr)
+    import tempfile
+    script_path = Path(tempfile.mktemp(suffix=".sh"))
     try:
+        # Download script first, then execute — no shell=True, no pipe-to-shell
         result = subprocess.run(
-            "curl -fsSL https://deno.land/install.sh | sh",
-            shell=True, capture_output=True, timeout=120,
+            ["curl", "-fsSL", "-o", str(script_path), "https://deno.land/install.sh"],
+            capture_output=True, timeout=60,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            print(f"[setup] deno install failed: {stderr}", file=sys.stderr)
+            return False
+
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            capture_output=True, timeout=120,
         )
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
@@ -385,6 +402,8 @@ def _install_deno() -> bool:
     except Exception as e:
         print(f"[setup] deno install error: {e}", file=sys.stderr)
         return False
+    finally:
+        script_path.unlink(missing_ok=True)
 
 
 def _install_curl_cffi() -> bool:
