@@ -44,7 +44,7 @@ With hermes-video `/watch` you can paste a URL or a local path, ask a question, 
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Hermes.** The script builds a validated Pydantic `WatchReport` model from all pipeline data — metadata, frames with timestamps and reasons, transcript segments with word-level timing. This model renders as a structured markdown report (tables, timelines) for human reading, and serializes to `report.json` for agent pipelines.
 6. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Hermes removes it.
+7. **Cleanup.** The downloaded video file is **deleted automatically** after frame extraction to save disk space (200MB–1GB per run). Only frames, transcript, and metadata are kept. Pass `--keep-video` to retain the video file.
 
 ## Frame budget — why it matters
 
@@ -159,6 +159,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
+- `--keep-video` — keep the downloaded video file after frame extraction. By default, the video is deleted automatically to save disk space (200MB–1GB per run). Only the extracted frames, transcript, and metadata are kept.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits

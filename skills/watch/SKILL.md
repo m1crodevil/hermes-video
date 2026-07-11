@@ -185,6 +185,7 @@ Optional flags:
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
+- `--keep-video` — keep the downloaded video file after frame extraction. By default, the video is deleted automatically to save disk space (200MB–1GB per run). Only the extracted frames, transcript, and metadata are kept. Use this when you need the video file for follow-up analysis.
 
 ### Focusing on a section (higher frame rate)
 
@@ -297,6 +298,21 @@ For production use, consider installing a PO Token provider plugin:
 yt-dlp --extractor-args "youtube:po_token=web.gvs+XXX" ...
 ```
 
+## Video cleanup and disk usage
+
+The script automatically deletes the downloaded video file after all processing (frame extraction + Whisper transcription if triggered) to prevent disk usage from ballooning. Each run can leave 200MB–1GB of video behind without this.
+
+**Correct cleanup order:**
+1. Fetch captions (JSON3/VTT) — free, instant
+2. Download video — only if frames are needed
+3. Extract frames from video
+4. Whisper transcription (only if captions were NOT available) — needs video for audio extraction
+5. **Delete video** — everything that needed it is done
+
+**Pitfall:** Do NOT extract audio "just in case" before frame extraction. Whisper is a fallback that's rarely triggered (most YouTube videos have auto-generated captions). Pre-extracting audio wastes time and disk for the 90%+ case where it's never used.
+
+Use `--keep-video` to retain the downloaded video when needed for follow-up analysis.
+
 ## Failure modes and handling
 
 - **Setup preflight failed (exit 2)** → missing binaries. Run `python3 "${SKILL_DIR}/scripts/setup.py"` to install.
@@ -321,6 +337,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 **What this skill does:**
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
+- **Deletes the downloaded video file after frame extraction** to save disk space (unless `--keep-video` is passed)
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
@@ -334,7 +351,5 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 6)
 
 **Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
-
-**Roadmap:** See `references/plan-pydantic-structured-output.md` for the Pydantic structured output refactoring plan (JSON + comprehensive markdown output).
 
 Review scripts before first use to verify behavior.
