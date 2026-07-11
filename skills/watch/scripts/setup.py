@@ -87,10 +87,37 @@ def _check_file_permissions(path: Path) -> None:
         pass
 
 
+_PLACEHOLDER_PATTERNS = (
+    "your_", "your-", "YOUR_", "YOUR-",
+    "changeme", "CHANGEME", "ChangeMe",
+    "sk-your", "sk-your-",  # common API key prefixes with placeholder
+)
+
+
+def _is_placeholder(value: str) -> bool:
+    """Return True if *value* looks like a template/placeholder rather
+    than a real credential.  The default .env template ships with
+    ``your_groq_api_key_here``, ``your_opencode_api_key_here``, etc. and
+    those must be treated as unset — otherwise setup reports 'ready' and
+    Whisper fails with 401."""
+    stripped = value.strip().lower()
+    if not stripped:
+        return True
+    if any(stripped.startswith(p.lower()) for p in _PLACEHOLDER_PATTERNS):
+        return True
+    # A real production API key is never a single word under 12 chars
+    # that looks like readable English.
+    if len(stripped) < 12 and " " not in stripped:
+        return True
+    return False
+
+
 def _read_env_key(name: str) -> str | None:
     value = os.environ.get(name)
-    if value and value.strip():
-        return value.strip()
+    if value:
+        stripped = value.strip()
+        if stripped and not _is_placeholder(stripped):
+            return stripped
     if not CONFIG_FILE.exists():
         return None
     _check_file_permissions(CONFIG_FILE)
@@ -105,7 +132,9 @@ def _read_env_key(name: str) -> str | None:
             raw = raw.strip()
             if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
                 raw = raw[1:-1]
-            return raw or None
+            if raw and not _is_placeholder(raw):
+                return raw
+            return None
     except OSError:
         return None
     return None
@@ -215,14 +244,10 @@ def _install_hint_windows(missing: list[str]) -> str:
 def _status() -> dict:
     """Structured preflight snapshot.
 
-    `status` describes the *ideal* state (a Whisper key is encouraged), so a
-    keyless install still reports `needs_key` on the very first run — that's
-    the agent's cue to encourage adding one.
-
-    `can_proceed` is the operational gate: /watch can run as long as the
-    binaries are present AND the user has either set a key or already finished
-    setup (consciously opting out of Whisper). A keyless user who completed
-    setup is NOT nagged on every call.
+    `status` describes the *ideal* state — a Whisper key is encouraged but
+    never blocks. `can_proceed` is the operational gate: /watch can run as
+    long as binaries are present. The installer marks SETUP_COMPLETE=true
+    once binaries are confirmed, regardless of whether a Whisper key exists.
     """
     missing = _check_binaries()
     has_key, backend = _have_api_key()
@@ -257,36 +282,23 @@ def _status() -> dict:
 def cmd_check() -> int:
     """Silent-on-success preflight.
 
-    Exit 0 with no output when /watch can run. A keyless user who already
-    finished setup (SETUP_COMPLETE=true) counts as ready — Whisper is
-    encouraged, not required — so they are never nagged on follow-up calls.
-
-    On a state that blocks /watch, print one actionable line to stderr:
-      2 → binaries missing
-      3 → genuine first run with no API key (encourage one)
-      4 → both missing
+    Exit 0 with no output when /watch can run. The only hard blocker is
+    missing binaries (ffmpeg / yt-dlp). Whisper API keys are a post-run
+    fallback — the script tries JSON3 captions first and only falls back
+    to Whisper when captions are missing, so a missing key never blocks
+    the initial run.
     """
-    s = _status()
-    if s["can_proceed"]:
+    missing = _check_binaries()
+    if not missing:
         return 0
 
-    parts = []
-    if s["missing_binaries"]:
-        parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"] and not s["setup_complete"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
-        f"[watch] setup incomplete ({'; '.join(parts)}). "
+        f"[watch] missing binaries: {', '.join(missing)}. "
         f"Run: python3 {installer}\n"
     )
     sys.stderr.flush()
-
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
-        return 2
-    return 3
+    return 2
 
 
 def cmd_json() -> int:
@@ -330,22 +342,21 @@ def cmd_install() -> int:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
     has_key, backend = _have_api_key()
-    if has_key:
+
+    # Binaries are present → mark setup complete. Whisper is a post-run
+    # fallback, not a blocker — JSON3 captions work without any API key.
+    if not missing:
         _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
+        if has_key:
+            print(f"[setup] ready. whisper backend: {backend}")
+        else:
+            print("[setup] ready. no whisper key — captions-only mode (whisper fallback available if needed)")
         if installed_deps:
             print("[setup] installed dependencies; /watch is fully set up.")
         return 0
 
-    print("")
-    print("[setup] one step left: add a Whisper API key.")
-    print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
-    print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
-    print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
-    print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
-    return 3
+    # Binaries missing → need user action
+    return 2
 
 
 def main() -> int:
