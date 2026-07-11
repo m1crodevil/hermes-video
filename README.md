@@ -42,7 +42,7 @@ With hermes-video `/watch` you can paste a URL or a local path, ask a question, 
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Hermes Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
-5. **Frames + transcript are handed to Hermes.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Hermes reads each frame in parallel — JPEGs render directly as images in its context.
+5. **Frames + transcript are handed to Hermes.** The script builds a validated Pydantic `WatchReport` model from all pipeline data — metadata, frames with timestamps and reasons, transcript segments with word-level timing. This model renders as a structured markdown report (tables, timelines) for human reading, and serializes to `report.json` for agent pipelines.
 6. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
 7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Hermes removes it.
 
@@ -155,6 +155,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Hermes needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
+- `--output markdown|json|both` — output format. `markdown` (default) = structured report to stdout with metadata tables, frame timeline, and transcript. `json` = writes `report.json` to the work directory with validated Pydantic models (metadata, frames, transcript segments with word-level timing). `both` = markdown to stdout + JSON file.
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
@@ -165,6 +166,46 @@ Other knobs (passed to `scripts/watch.py`):
 - **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
 
+## Structured output
+
+Every `/watch` run produces a validated Pydantic `WatchReport` model containing all pipeline data. This enables two output modes:
+
+**Markdown** (default) — structured report with metadata table, frame timeline, and timestamped transcript. Human-readable, renders well in Telegram/Slack.
+
+**JSON** (`--output json` or `--output both`) — writes `report.json` to the work directory. Machine-readable, ready for downstream pipelines (clipping tools, moment detection, content analysis).
+
+```json
+{
+  "metadata": {
+    "source": "https://youtu.be/...",
+    "title": "Video Title",
+    "duration": 120.0,
+    "duration_fmt": "02:00",
+    "resolution": "1280x720"
+  },
+  "frames": [
+    {
+      "path": "/tmp/watch-xxx/frames/frame_0001.jpg",
+      "timestamp": 10.0,
+      "timestamp_fmt": "00:10",
+      "reason": "scene-change"
+    }
+  ],
+  "transcript_segments": [
+    {
+      "start": 10.0,
+      "end": 12.0,
+      "text": "spoken text here",
+      "words": [
+        {"word": "spoken", "start": 10.0, "confidence": 0.95}
+      ]
+    }
+  ]
+}
+```
+
+**Models:** `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegment`, `WordTiming`, `FocusRange` — all defined in `scripts/models.py` with full type validation and computed fields (`duration_fmt`, `timestamp_fmt`, `resolution`).
+
 ## Structure
 
 ```
@@ -173,6 +214,7 @@ Other knobs (passed to `scripts/watch.py`):
 │   ├── SKILL.md                  # skill contract
 │   └── scripts/
 │       ├── watch.py              # entry point
+│       ├── models.py             # Pydantic models (WatchReport, Frame, Transcript, etc.)
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction
 │       ├── transcribe.py         # VTT/JSON3 parsing + Whisper orchestration
@@ -180,7 +222,8 @@ Other knobs (passed to `scripts/watch.py`):
 │       ├── language.py           # subtitle language detection
 │       ├── config.py             # shared config
 │       └── setup.py              # preflight + installer
-├── tests/                        # pytest suite
+├── tests/
+│   └── test_models.py            # Pydantic model unit tests (30 tests)
 ├── install.sh                    # install script
 └── LICENSE                       # MIT
 ```
@@ -188,7 +231,10 @@ Other knobs (passed to `scripts/watch.py`):
 ## Develop
 
 ```bash
-# Run the test suite
+# Run the model unit tests
+python3 tests/test_models.py
+
+# Or with pytest
 python3 -m pytest tests/ -v
 
 # Build the skill bundle
