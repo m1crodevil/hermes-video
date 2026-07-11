@@ -1,6 +1,4 @@
-# /watch
-
-**Give Hermes the ability to watch any video.**
+# /watch **Give Hermes the ability to watch any video.**
 
 Hermes Agent:
 
@@ -42,44 +40,59 @@ With hermes-video `/watch` you can paste a URL or a local path, ask a question, 
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
-3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall.
+3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Hermes Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
-5. **Frames + transcript are handed to your agent.** The script prints frame paths with timestamps and the transcript. Your agent reads each frame as an image and combines it with the transcript.
-6. **Your agent answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, delete it.
+5. **Frames + transcript are handed to Hermes.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Hermes reads each frame in parallel — JPEGs render directly as images in its context.
+6. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
+7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Hermes removes it.
 
 ## Frame budget — why it matters
 
 Token cost is dominated by frames. Every frame is an image; image tokens add up fast. The script's auto-fps logic exists so you don't blow your context budget on a sparse scan of a 30-minute video that would have been better answered by a focused 30-second window.
 
-| Duration     | Default frame budget      | What you get                                                                                  |
-| ------------ | ------------------------- | --------------------------------------------------------------------------------------------- |
-| ≤30 s        | ~30 frames                | Dense — basically every key moment                                                            |
-| 30 s - 1 min | ~40 frames                | Still dense                                                                                   |
-| 1 - 3 min    | ~60 frames                | Comfortable                                                                                   |
-| 3 - 10 min   | ~80 frames                | Sparse but workable                                                                           |
-| > 10 min     | 100 frames (capped modes) | "Sparse scan" warning — re-run focused, or `--detail token-burner` for full uncapped coverage |
+| Duration | Default frame budget | What you get |
+|----------|---------------------|--------------|
+| ≤30 s | ~30 frames | Dense — basically every key moment |
+| 30 s - 1 min | ~40 frames | Still dense |
+| 1 - 3 min | ~60 frames | Comfortable |
+| 3 - 10 min | ~80 frames | Sparse but workable |
+| > 10 min | 100 frames (capped modes) | "Sparse scan" warning — re-run focused, or `--detail token-burner` for full uncapped coverage |
 
 When the user names a moment ("around 2:30", "the last 30 seconds", "from 0:45 to 1:00"), pass `--start` / `--end`. Focused mode gets denser per-second budgets, capped at 2 fps. Far more useful than a sparse pass over the whole thing.
+
+## Frame deduplication
+
+Frame selection — keyframes (`efficient`), scene-change detection (`balanced`/`token-burner`), or the uniform sampler it falls back to — can still surface near-identical frames: a screen recording that holds one slide for 90 seconds produces a dozen, each billed as a separate image. A dedup pass drops them before frames reach Hermes. It runs by default on every frame mode (`--no-dedup` turns it off):
+
+1. One `ffmpeg` call scales each extracted JPEG to a 16×16 grayscale thumbnail. Everything after is pure-stdlib Python — no image libraries.
+2. For each frame, compute the **mean absolute difference** against the *last frame that was kept* (average per-pixel brightness change, 0–255 scale).
+3. If that difference is at or below the threshold (`2.0`), the frame is a near-duplicate and is dropped. Otherwise it's kept and becomes the new reference.
+4. The frame-budget cap applies *after* dedup, so the budget is spent on distinct frames.
+
+Comparing against the last *kept* frame (not the previous one) catches slow fades that never trip a frame-to-frame threshold. The threshold is deliberately low and measures absolute brightness rather than structure, so a one-line code diff, a terminal scrolling a row, or two differently-colored flat slides all survive. The *Frames* line reports what was collapsed, e.g. `6 selected from 14 candidates (… 8 near-duplicates dropped …)`. On always-moving footage nothing is dropped and you pay what you would have anyway.
 
 ## Detail modes — measured
 
 The `--detail` dial trades speed and token cost for visual fidelity.
 
-| Mode           | Engine                         | Frames | Cap      | Extraction time                            | Est. image tokens      |
-| -------------- | ------------------------------ | ------ | -------- | ------------------------------------------ | ---------------------- |
-| `transcript`   | none (captions)                | 0      | —        | **~4.5 s** (one yt-dlp call, no download) | 0 (text only)          |
-| `efficient`    | keyframe (`-skip_frame nokey`) | 50     | 50       | **~0.5 s**                                 | **~9.8k**              |
-| `balanced`     | scene-change                   | 100    | 100      | **~20.9 s**                                | **~19.7k**             |
-| `token-burner` | scene-change                   | 116    | uncapped | **~21.0 s**                                | **~22.8k**             |
+| Mode | Engine | Frames | Cap | Extraction time | Est. image tokens |
+|------|--------|--------|-----|-----------------|-------------------|
+| `transcript` | none (captions) | 0 | — | **~4.5 s** (one yt-dlp call, no download) | 0 (text only) |
+| `efficient` | keyframe (`-skip_frame nokey`) | 50 | 50 | **~0.5 s** | **~9.8k** |
+| `balanced` | scene-change | 100 | 100 | **~20.9 s** | **~19.7k** |
+| `token-burner` | scene-change | 116 | uncapped | **~21.0 s** | **~22.8k** |
+
+- **Image tokens** use Anthropic's `(width × height) / 750` — at the default 512px width these 720p frames are 512×288, **≈197 tokens/frame**; `--resolution 1024` roughly 4× that. The transcript is surfaced in every captioned mode and on long videos is often the larger cost.
+- **One sampling rule across frame modes.** Each detects all candidates across the full range, then even-samples (first + last always kept) down to its cap. The modes differ only in candidate *source* (keyframes vs. scene cuts) and cap, never in how coverage is spread — so the last frame always lands at the end, not partway through.
+- **`efficient` is the speed tier** (~0.5 s) — it only reconstructs keyframes, so it's ~40× faster than the scene modes, which decode every frame to find cuts. It can also return *more* frames than `balanced` on low-motion footage (keyframes outnumber scene cuts); "efficient" means fast extraction, not fewer frames.
+- **`token-burner` only diverges from `balanced` past the cap.** This clip had 116 cuts, so `balanced` sampled 100 and `token-burner` kept all 116. On high-motion video with hundreds of cuts, `token-burner` keeps everything (and trips the >250-frame token warning) while `balanced` thins to 100.
 
 ## Install
 
-| Surface                     | Install                                        |
-| --------------------------- | ---------------------------------------------- |
-| **Hermes Agent**            | `hermes skill add hermes-video`                |
-| **Install script**          | `git clone` then `./install.sh`                |
-| **Manual**                  | `git clone` then symlink `skills/watch` into your skills dir |
+| Surface | Install |
+|---------|---------|
+| **Hermes Agent** | `hermes skill add hermes-video` |
+| **Manual / dev** | `git clone` then symlink `skills/watch` into your skills dir |
 
 ### Hermes Agent
 
@@ -89,16 +102,11 @@ hermes skill add hermes-video
 
 ### Manual (developer)
 
+Clone the repo and symlink the self-contained skill folder into your skills directory — the symlink keeps the install in sync with your working tree as you edit:
+
 ```bash
 git clone https://github.com/m1crodevil/hermes-video.git
-cd hermes-video
-./install.sh
-```
-
-Or symlink directly:
-
-```bash
-ln -s "$(pwd)/skills/watch" ~/.hermes/skills/video
+ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/video
 ```
 
 ## First run
@@ -110,18 +118,18 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 - **Windows** — prints the `winget` / `pip` commands.
 - **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
 
-After setup, preflight is silent and `/watch` just works.
+After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
 ## Bring your own keys
 
 Captions cover the majority of public videos for free. The Whisper fallback only kicks in when a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload.
 
-| Capability                   | What you need                                                        | Cost                               |
-| ---------------------------- | -------------------------------------------------------------------- | ---------------------------------- |
-| Download + native captions   | `yt-dlp` + `ffmpeg`                                                  | Free                               |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3`   | Cheap, fast                        |
-| Whisper fallback (alt)       | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing                   |
-| Disable Whisper entirely     | `--no-whisper`                                                       | Free, frames-only when no captions |
+| Capability | What you need | Cost |
+|------------|---------------|------|
+| Download + native captions | `yt-dlp` + `ffmpeg` | Free |
+| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
+| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage
 
@@ -140,21 +148,21 @@ Focused on a specific section — denser frame budget, lower token cost:
 /watch "$URL" --start 1:12:00            # from 1h12m to end
 ```
 
-Other knobs:
+Other knobs (passed to `scripts/watch.py`):
 
-- `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial.
-- `--timestamps T1,T2,…` — grab a frame at each absolute timestamp.
+- `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` skips frames (transcript only); `efficient` uses fast keyframes (cap 50); `balanced` uses scene-aware frames (cap 100); `token-burner` is scene-aware and uncapped.
+- `--timestamps T1,T2,…` — grab a frame at each absolute timestamp (`SS`/`MM:SS`/`HH:MM:SS`). Hermes reads the transcript first, then targets the moments the presenter flags ("look here", "as you can see"). Added on top of the detail frames (reserved against the cap); out-of-window cues are dropped in focus mode; with `--detail transcript` these become the only frames.
 - `--max-frames N` — lower the frame cap for a tighter token budget.
-- `--resolution W` — bump frame width to 1024 px when you need to read on-screen text.
+- `--resolution W` — bump frame width to 1024 px when Hermes needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
-- `--no-dedup` — keep near-duplicate frames.
-- `--out-dir DIR` — keep working files somewhere specific.
+- `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
+- `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits
 
-- **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens.
+- **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
 
 ## Structure
@@ -167,8 +175,9 @@ Other knobs:
 │       ├── watch.py              # entry point
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction
-│       ├── transcribe.py         # VTT parsing + Whisper orchestration
+│       ├── transcribe.py         # VTT/JSON3 parsing + Whisper orchestration
 │       ├── whisper.py            # Groq / OpenAI clients
+│       ├── language.py           # subtitle language detection
 │       ├── config.py             # shared config
 │       └── setup.py              # preflight + installer
 ├── tests/                        # pytest suite
