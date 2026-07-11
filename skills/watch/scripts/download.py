@@ -159,7 +159,7 @@ def fetch_metadata_only(url: str, out_dir: Path) -> dict:
     # YouTube 2026: impersonate + JS runtime for metadata extraction
     cmd[1:1] = _yt_dlp_network_opts()
 
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     return _read_info(out_dir / "video.info.json", url)
 
 
@@ -176,7 +176,7 @@ def list_available_subtitles(url: str) -> dict:
         "--", url,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     output = result.stdout + result.stderr
 
     manual = []
@@ -269,7 +269,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
     # YouTube 2026: impersonate + JS runtime for subtitle extraction
     cmd[1:1] = _yt_dlp_network_opts()
 
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     subtitle = _pick_subtitle(out_dir, best_lang)
     
     return {
@@ -343,7 +343,7 @@ def download_url(
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     video = _pick_video(out_dir)
     if video is None:
         raise SystemExit(
