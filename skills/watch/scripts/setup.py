@@ -66,6 +66,21 @@ def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if not _which(b)]
 
 
+def _check_ytdlp_deps() -> dict[str, bool]:
+    """Check YouTube 2026 download deps: deno (JS runtime) + curl_cffi (impersonation).
+
+    Without these, metadata + subtitles still work but video download gets 403.
+    """
+    has_deno = _which("deno") is not None
+    has_curl_cffi = False
+    try:
+        import curl_cffi  # noqa: F401
+        has_curl_cffi = True
+    except ImportError:
+        pass
+    return {"deno": has_deno, "curl_cffi": has_curl_cffi}
+
+
 def _check_python_packages() -> list[str]:
     """Check if required Python packages are importable."""
     missing = []
@@ -262,6 +277,34 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+def _ensure_ytdlp_config() -> None:
+    """Create ~/.config/yt-dlp/config with YouTube 2026 flags if missing."""
+    ytdlp_config = Path.home() / ".config" / "yt-dlp" / "config"
+    if ytdlp_config.exists():
+        return
+    ytdlp_config.parent.mkdir(parents=True, exist_ok=True)
+    ytdlp_config.write_text(
+        "--impersonate\nchrome\n--js-runtimes\ndeno\n",
+        encoding="utf-8",
+    )
+    print(f"[setup] created yt-dlp config: {ytdlp_config}", file=sys.stderr)
+
+
+def _warn_ytdlp_deps() -> None:
+    """Warn about missing deno/curl_cffi — these cause 403 on video downloads."""
+    deps = _check_ytdlp_deps()
+    missing = [k for k, v in deps.items() if not v]
+    if not missing:
+        return
+    hints = []
+    if "deno" in missing:
+        hints.append("  deno: curl -fsSL https://deno.land/install.sh | sh")
+    if "curl_cffi" in missing:
+        hints.append("  curl_cffi: pip install --break-system-packages curl-cffi")
+    print("[setup] YouTube 2026 download deps missing (video downloads may 403):", file=sys.stderr)
+    print("\n".join(hints), file=sys.stderr)
+
+
 def _status() -> dict:
     """Structured preflight snapshot.
 
@@ -273,6 +316,7 @@ def _status() -> dict:
     missing = _check_binaries()
     has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
+    ytdlp_deps = _check_ytdlp_deps()
 
     if not missing and has_key:
         status = "ready"
@@ -292,6 +336,7 @@ def _status() -> dict:
         "first_run": not setup_complete,
         "setup_complete": setup_complete,
         "missing_binaries": missing,
+        "ytdlp_deps": ytdlp_deps,
         "whisper_backend": backend,
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
@@ -364,6 +409,12 @@ def cmd_install() -> int:
 
     # Install missing Python packages (pydantic, etc.)
     _install_python_packages()
+
+    # Create yt-dlp config for YouTube 2026 (impersonate + JS runtime)
+    _ensure_ytdlp_config()
+
+    # Warn about missing deno/curl_cffi (non-blocking, just hints)
+    _warn_ytdlp_deps()
 
     has_key, backend = _have_api_key()
 
