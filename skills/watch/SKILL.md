@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.5.0"
+version: "1.6.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -24,7 +24,20 @@ metadata:
 
 # /watch
 
-You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+Downloads a video, pulls its transcript, extracts frames as JPEGs, then hands everything to you so you can answer what's in it.
+
+## When to use /watch
+
+- User shares a video URL (YouTube, TikTok, Vimeo, Instagram, etc.)
+- User shares a local video file path (.mp4, .mov, .mkv, .webm)
+- User asks about video content ("what happens in this video?")
+- User wants to analyze/summarize a video
+
+## When NOT to use /watch
+
+- Download only → use yt-dlp directly
+- Edit/cut video → use ffmpeg directly
+- Audio transcription only → use whisper.py directly
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
@@ -47,19 +60,11 @@ if [ ! -f "$SKILL_DIR/scripts/watch.py" ]; then
 fi
 ```
 
-## Step 0 — Setup preflight (silent on success)
+## Setup preflight
 
-**Python interpreter:** every `python3 ...` command in this skill is for macOS/Linux. On **Windows**, substitute `python` — the `python3` command on Windows is the Microsoft Store stub and will not run the script.
+**Python interpreter:** every `python3 ...` command in this skill is for macOS/Linux. On **Windows**, substitute `python`.
 
-**Goal:** make sure binaries (ffmpeg, yt-dlp) are installed, YouTube 2026 deps (deno, curl_cffi) are present, and `~/.config/watch/.env` exists. Do NOT ask about Whisper API keys here — that happens later, only if captions are missing.
-
-**YouTube 2026 deps (required for video downloads, not just transcripts):**
-- **deno** — JS runtime for YouTube challenge solving. Without it, video downloads get HTTP 403. Install: `curl -fsSL https://deno.land/install.sh | sh` then add `~/.deno/bin` to PATH.
-- **curl_cffi** — browser impersonation to bypass bot detection. Install: `pip install --break-system-packages curl-cffi` (or `uv pip install --python <venv-python> curl-cffi` for venvs without pip).
-- The setup script (`setup.py --json`) reports these in the `ytdlp_deps` field and **auto-installs** missing deps (deno via install.sh, curl_cffi via uv/pip). It also auto-creates `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno`.
-- Without these, transcripts (captions) still work — only video download fails with 403. See `references/youtube-403-download.md` for the full pattern.
-
-### First run in session
+Run `setup.py --json` once per session:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py" --json
@@ -67,107 +72,35 @@ python3 "${SKILL_DIR}/scripts/setup.py" --json
 
 Branch on the JSON fields:
 
-- **`can_proceed: true`** → binaries present, config exists. Proceed to Step 1 silently.
-- **`first_run: true`** → genuine first-time setup. Do these in order:
-  1. If `missing_binaries` is non-empty, run the installer and confirm binaries land.
-  2. Run the installer once more to scaffold `~/.config/watch/.env` (only writes template when file absent).
-  3. Write `SETUP_COMPLETE=true` into the config file.
-  4. **Optionally** ask the first-run watch preference (detail level) — but do NOT ask about Whisper yet.
-  5. Proceed to Step 1.
-- **`can_proceed: false` and `first_run: false`** → environment regressed. Run installer to remediate, then proceed.
+- **`can_proceed: true`** → binaries present, config exists. Proceed silently.
+- **`first_run: true`** → run installer, scaffold `.env`, write `SETUP_COMPLETE=true`. Optionally ask default detail level (keep `(recommended)` on `balanced`). Do NOT ask about Whisper keys yet — that happens post-run only if captions are missing.
+- **`can_proceed: false`** → environment regressed. Run installer to remediate.
 
-### Follow-up calls in the same session
+For follow-up calls: `python3 "${SKILL_DIR}/scripts/setup.py" --check` — exit 0 = ready.
 
-```bash
-python3 "${SKILL_DIR}/scripts/setup.py" --check
-```
-
-Exit 0 = ready. Proceed silently. Non-zero = run installer to fix.
-
-### The installer
-
-Idempotent — safe to re-run:
+The installer is idempotent:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-On macOS with Homebrew, auto-installs `ffmpeg` and `yt-dlp`. On Linux (Debian/Ubuntu with sudo), auto-installs ffmpeg via apt, yt-dlp standalone binary, deno, and curl_cffi. Without sudo, yt-dlp + deno still auto-install to `~/.local/bin` and `~/.deno/bin`. Scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
-
-### First-run watch preference (optional, one-time)
-
-After the installer scaffolds `.env`, you may ask one question:
-
-- Default detail (one dial). Present as `AskUserQuestion` options — lightest to heaviest, keep `(recommended)` on `balanced`:
-  - `transcript` — no frames at all, transcript only.
-  - `efficient` — fast keyframe pass (cap 50).
-  - `balanced` (recommended) — scene-aware frames (cap 100, default).
-  - `token-burner` — scene-aware, uncapped (maximum fidelity; high token cost).
-
-Write the answer into `~/.config/watch/.env`:
-
-```bash
-WATCH_DETAIL=balanced
-```
-
-If they skip, keep the recommended default. Do not re-ask when `SETUP_COMPLETE=true`.
+Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 requires deno (JS runtime for challenge solving) + curl_cffi (browser impersonation) — the installer auto-installs both and writes `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno`. Without these, transcripts still work but video downloads get HTTP 403.
 
 ### Structured mode reference
 
-`python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, ytdlp_deps, whisper_backend, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use `can_proceed`/`first_run` to decide whether to run; **ignore `needs_key`** — Whisper is handled post-run, not here.
+`setup.py --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, ytdlp_deps, whisper_backend, has_api_key, config_file, watch_detail, platform}`. Use `can_proceed`/`first_run` to decide whether to run; **ignore `needs_key`** — Whisper is handled post-run, not here.
 
-`ytdlp_deps` is `{deno: bool, curl_cffi: bool}` — YouTube 2026 requires both for video downloads. If either is `false`, video downloads will 403 (transcripts still work). The installer prints install hints for missing deps.
+`ytdlp_deps` is `{deno: bool, curl_cffi: bool}` — if either is `false`, video downloads will 403 (transcripts still work).
 
-## Structured output (Pydantic models)
+## Workflow
 
-The script produces validated output via Pydantic models (`scripts/models.py`). This enables:
-
-- **JSON serialization** — `report.json` written with `--output json` or `--output both`
-- **Markdown rendering** — `report.to_markdown()` produces the human-readable report
-- **Programmatic access** — agent can read `report.json` to access `frames[0].path`, `transcript_segments[i].text`, etc.
-
-### Models
-
-| Model | Purpose |
-|-------|---------|
-| `WatchReport` | Top-level container — metadata, frames, transcript, warnings |
-| `VideoMetadata` | Source URL, title, uploader, duration, resolution, codec |
-| `Frame` | Path, timestamp, reason (scene-change/keyframe/etc), deduped flag |
-| `FrameStats` | Candidates, selected, deduped, engine |
-| `TranscriptSegment` | Start/end time, text, word-level timing (JSON3) |
-| `WordTiming` | Single word with ASR confidence |
-| `FocusRange` | Optional start/end for partial analysis |
-
-### JSON output structure
-
-```json
-{
-  "metadata": {
-    "source": "https://youtu.be/...",
-    "title": "...",
-    "duration": 120.0,
-    "duration_fmt": "02:00",
-    "resolution": "1280x720"
-  },
-  "frames": [
-    {"path": "...", "timestamp": 10.0, "timestamp_fmt": "00:10", "reason": "scene-change"}
-  ],
-  "transcript_segments": [
-    {"start": 10.0, "end": 12.0, "text": "...", "words": [{"word": "...", "start": 10.0, "confidence": 0.95}]}
-  ]
-}
-```
-
-## Transcription priority (understand this first)
-
-The script uses a **two-tier** transcription pipeline. JSON3 captions are tried first (free, instant). Whisper is only a fallback for videos without native captions:
-
-1. **JSON3/VTT captions (free, preferred).** `watch.py` calls `fetch_captions()` via yt-dlp which pulls manual or auto-generated subtitles from the source platform. YouTube captions come in JSON3 format with word-level timing (`tOffsetMs`) and ASR confidence (`acAsrConf`). This is the default — no API key needed.
-2. **Whisper API fallback (only when captions missing).** If `fetch_captions()` returns nothing, the script extracts audio and sends it to a Whisper API:
-   - **Groq** — `whisper-large-v3` (preferred; cheaper, faster). Key at console.groq.com/keys.
-   - **OpenAI** — `whisper-1` (fallback). Key at platform.openai.com/api-keys.
-
-**Key insight:** most YouTube videos have auto-generated captions. Whisper is rarely needed. Do NOT ask the user about Whisper keys upfront — wait until the script reports "no transcript available" and THEN offer it.
+- [ ] Step 0: Setup preflight (`setup.py --json`)
+- [ ] Step 1: Parse source + question from user input
+- [ ] Step 2: Run `watch.py "<source>"` with appropriate flags
+- [ ] Step 3: Check transcript → if missing, offer Whisper
+- [ ] Step 4: `vision_analyze` 8-15 representative frames
+- [ ] Step 5: Answer user (specific question OR summarize)
+- [ ] Step 6: Handle follow-ups from context, cleanup
 
 ## How to invoke
 
@@ -179,25 +112,25 @@ The script uses a **two-tier** transcription pipeline. JSON3 captions are tried 
 python3 "${SKILL_DIR}/scripts/watch.py" "<source>"
 ```
 
-**Pitfall:** yt-dlp's `--convert-subs json3` does NOT work. To get JSON3 format, use `--sub-format "json3/best"` as a preference. The script handles this automatically.
+**Pitfall:** yt-dlp's `--convert-subs json3` does NOT work. The script handles this automatically via `--sub-format "json3/best"`.
 
 Optional flags:
-- `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames (transcript only, skips video download when captions exist); `efficient` = fast keyframes (cap 50); `balanced` = scene-aware frames (cap 100); `token-burner` = scene-aware, uncapped.
+- `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames; `efficient` = keyframes (cap 50); `balanced` = scene-aware (cap 100); `token-burner` = uncapped.
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
-- `--timestamps T1,T2,…` — grab a frame at each of these absolute timestamps (`SS`, `MM:SS`, or `HH:MM:SS`). Use this after reading the transcript to capture deictic moments the presenter flags ("look here", "as you can see", "notice this") that visual selection alone may miss. See "Transcript-cue frames" below.
-- `--max-frames N` — override the preset cap for tighter token budget (e.g. `--max-frames 40`)
-- `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
+- `--timestamps T1,T2,…` — grab a frame at each absolute timestamp. Use this after reading the transcript to capture deictic moments ("look here", "notice this"). See "Transcript-cue frames" below.
+- `--max-frames N` — override the preset cap (e.g. `--max-frames 40`)
+- `--resolution W` — frame width in px (default 512; bump to 1024 only for on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
-- `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
-- `--output markdown|json|both` — output format. `markdown` (default) = human-readable report to stdout; `json` = writes `report.json` to work dir; `both` = markdown to stdout + JSON file.
-- `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
-- `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
-- `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
-- `--keep-video` — keep the downloaded video file after frame extraction. By default, the video is deleted automatically to save disk space (200MB–1GB per run). Only the extracted frames, transcript, and metadata are kept. Use this when you need the video file for follow-up analysis.
+- `--out-dir DIR` — working files location (default: auto-generated tmp dir)
+- `--output markdown|json|both` — `markdown` (default) = stdout; `json` = writes `report.json`; `both` = both.
+- `--whisper groq|openai` — force a specific backend (default: prefer Groq)
+- `--no-whisper` — disable Whisper fallback entirely
+- `--no-dedup` — keep near-duplicate frames (usually dropped to save budget)
+- `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
 
 ### Focusing on a section (higher frame rate)
 
-When the user asks about a specific moment — "what happens at the 2 minute mark?", "zoom into 0:45 to 1:00", "the first 10 seconds" — pass `--start` and/or `--end`. The script switches to focused-mode budgets, which are denser than full-video budgets (still capped at 2 fps, and still bounded by the detail-mode cap — the counts below assume the default `balanced` cap of 100; `efficient` tops out at 50):
+When the user asks about a specific moment, pass `--start` and/or `--end`. Focused-mode budgets:
 
 - ≤5s → 2 fps (up to 10 frames)
 - 5-15s → 2 fps (up to 30 frames)
@@ -205,57 +138,56 @@ When the user asks about a specific moment — "what happens at the 2 minute mar
 - 30-60s → ~1.3 fps (up to 80 frames)
 - 60-180s → ~0.6 fps (100 frames, capped)
 
-Focused mode is the right call for:
-- Any moment/range the user names explicitly ("around 2:30", "the intro", "the last 30 seconds").
-- Any video longer than ~10 minutes where the user's question is about a specific part — running focused on the relevant section is far more useful than a sparse scan of the whole thing.
-- Re-runs after a full scan didn't have enough detail in some region.
+Focused mode is the right call for: any moment/range the user names explicitly; any video >10 minutes where the question targets a specific part; re-runs after a full scan lacked detail in some region. Transcript is auto-filtered to the same range. Frame timestamps are absolute.
 
-Transcript is auto-filtered to the same range. Frame timestamps are absolute (real video timeline, not offset-from-start).
-
-Examples:
 ```bash
-# Last 10 seconds of a 1 minute video
 python3 "${SKILL_DIR}/scripts/watch.py" video.mp4 --start 50 --end 60
-
-# Zoom into 2:15 → 2:45 at 2 fps (60 frames)
 python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 2:15 --end 2:45 --fps 2
-
-# From 1h12m to the end of the video
 python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 ```
 
-**Step 3 — check the transcript result.** After the script runs, inspect the report header. Look at the `- **Transcript:**` line:
+**Step 3 — check the transcript result.** Inspect the `- **Transcript:**` line:
 
 - **Transcript available** (`source: captions (json3)`, `captions (vtt)`, or `whisper (...)`) → proceed to Step 4.
-- **Transcript: none available** → captions were missing AND Whisper either has no key or failed. **This is the moment to offer Whisper**, not before. Ask the user:
+- **Transcript: none available** → captions missing AND Whisper not configured. **This is the moment to offer Whisper**, not before. Ask the user:
 
   > "Video ini gak punya native captions. Mau setup Whisper API biar bisa transkripsi? (Groq gratis, OpenAI juga bisa) — atau lanjut frames-only aja?"
 
-  If they want Whisper, run `python3 "${SKILL_DIR}/scripts/setup.py"` to scaffold `.env`, then ask for the API key and write it. Re-run the watch script with the same URL.
-  If they decline, proceed frames-only — answer from frames alone.
+  If they want Whisper, run `setup.py`, ask for API key, write it to `.env`, re-run watch script. If they decline, proceed frames-only.
 
-**Step 4 — view every frame the script lists.** The script outputs frame paths as JPEG files.
+**Step 4 — view frames.** The script outputs JPEG frame paths.
 
-**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change and keyframe engines name files by extraction index (`frame_0211.jpg`, `frame_0345.jpg`, etc.), not by timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first to see what actually exists, then pick 8-15 representative frames spread across the list for `vision_analyze`.
+**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change engines name files by extraction index (`frame_0211.jpg`), not timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first, then pick 8-15 representative frames spread across the list for `vision_analyze`.
 
-**Pitfall (Hermes):** The `read_file` tool cannot handle binary images — it returns "Cannot read binary file". Use `vision_analyze` instead to inspect frame images:
+**Pitfall:** `read_file` cannot handle binary images. Use `vision_analyze` instead:
 
 ```bash
-# Example: view a frame
 vision_analyze(image_url="/tmp/watch-XXXX/frames/frame_0001.jpg", question="What is shown in this frame?")
 ```
 
-For large frame counts (50+), sample representative frames spread evenly rather than loading all of them — vision_analyze calls are expensive. Read 8-15 frames across the video timeline for a good visual overview.
+For 50+ frames, sample 8-15 representative frames evenly rather than loading all — vision calls are expensive.
 
 **Step 5 — answer the user.** You now have two streams of evidence:
 - **Frames** — what's on screen at each timestamp
-- **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
+- **Transcript** — what's said at each timestamp
 
-If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
+### Anti-hallucination rules
 
-This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
+- Answer ONLY from what you see in frames (visual) and read in transcript (audio)
+- Do not invent details not present in frames or transcript
+- If a frame is unclear or low quality, say "I can't see clearly in this frame"
+- Always cite timestamps: "At 2:35, the speaker says..." or "In the frame at 1:12..."
+- If transcript is in a language you don't understand, say so
+- If the video has no useful content for the question, say "The video doesn't cover this"
 
-**Step 6 — follow-ups.** The downloaded video is already auto-deleted (see "Video cleanup and disk usage"). The frames and transcript remain in the working directory. If the user asks follow-ups about this video, answer from the frames and transcript you already have in context — do NOT re-run the script. If no follow-ups are expected, clean up with `rm -rf <dir>`.
+### Decision guide
+
+- **User asked a specific question** → answer directly citing timestamps
+- **User asked "summarize"** → structure, key moments, notable visuals, spoken content
+- **No question** → summarize what happens in the video
+- **Transcript-only mode** → synthesize structure and key moments, don't paste full transcript
+
+**Step 6 — follow-ups.** The downloaded video is auto-deleted. Frames and transcript remain in the working directory. Answer follow-ups from what you already have — do NOT re-run the script. If no follow-ups expected, clean up with `rm -rf <dir>`.
 
 ## Detail and frames
 
@@ -263,104 +195,57 @@ Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
 
-At `transcript` detail, captions are enough to return a report without downloading video. If captions are missing, the script downloads audio only and tries Whisper. If no transcript can be produced, it reports the limitation clearly; re-run with `--detail balanced` for frames.
-
-At `efficient` detail, the script downloads the video and extracts **keyframes only** (`ffmpeg -skip_frame nokey`) — a near-instant pass that lands frames on scene cuts. If a clip has fewer than 4 keyframes it falls back to uniform sampling.
-
-At `balanced` / `token-burner` detail, the script extracts **scene-aware** frames: ffmpeg scene-change selection first, falling back to uniform sampling only when the video is effectively static. `balanced` caps at 100 frames; `token-burner` is uncapped. Frame report lines include both timestamp and selection reason. Extracted images are clamped to a maximum 1998px height for Claude Read compatibility.
+**transcript** — captions only; no video download when captions exist. **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames; balanced caps at 100, token-burner is uncapped. Frame report lines include timestamp and selection reason.
 
 ## Transcript-cue frames
 
-Visual frame selection (scene/keyframe) can miss the moments a presenter explicitly flags — "look here", "as you can see", "notice this", "watch what happens" — because pointing at a slide is often a *low* visual change. `--timestamps` lets you force a frame at those exact moments. **You** decide which moments matter, by reading the transcript:
+Visual frame selection can miss moments a presenter explicitly flags ("look here", "notice this") because pointing at a slide is often a *low* visual change. `--timestamps` forces a frame at those moments:
 
-1. Run once at `--detail transcript` (or any detail) to get the timestamped transcript.
-2. Scan it for deictic cues — phrases where the speaker directs attention to something on screen. This is a judgment call (ignore rhetorical "look, the point is…"); that's why it's done by you, not a regex.
-3. Re-run with `--timestamps 4:32,7:10,9:55` (absolute source times). For a URL, point the second run at the **downloaded local file** in the work dir so it doesn't re-download.
+1. Run once to get the timestamped transcript.
+2. Scan for deictic cues — phrases where the speaker directs attention on screen.
+3. Re-run with `--timestamps 4:32,7:10,9:55`. For a URL, point the second run at the **downloaded local file** so it doesn't re-download.
 
-Behavior:
-- **Additive by default.** Cue frames (`reason=transcript-cue`) are merged into whatever `--detail` already selected, in chronological order.
-- **Pinned and counted first.** Cue frames are reserved against the frame cap before the detail engine runs, so they're never evicted by even-sampling.
-- **Honors focus mode.** With `--start/--end`, any cue timestamp outside the window is dropped (reported in the summary). Coordinates are always absolute source time.
-- **Cue-only frames.** `--detail transcript --timestamps …` skips scene/keyframe sampling and returns *only* the cue frames (it will download the video to do so, since frames need pixels).
+Behavior: additive by default; cue frames are pinned and counted first; honors focus mode; `--detail transcript --timestamps …` returns *only* cue frames.
 
 ## Cookies & Rate Limiting
 
-YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates this with three strategies:
-
-1. **Skip re-download** — `fetch_captions()` downloads subtitles once; `download_url()` skips re-downloading if already fetched.
-2. **Browser cookies** — If Chrome/Chromium is detected, `--cookies-from-browser chrome` is passed automatically for authenticated sessions.
-3. **Sleep intervals** — `--sleep-subtitles 3` adds a 3-second delay between subtitle requests as a safety net.
-
-### Setup cookies (recommended)
-
-For best reliability, log in to YouTube in Chrome. The script auto-detects cookies from:
-- `~/.config/google-chrome/Default/Cookies` (Linux)
-- `~/.config/chromium/Default/Cookies` (Linux)
-- `~/Library/Application Support/Google/Chrome/Default/Cookies` (macOS)
-
-No manual configuration needed — just be logged in to YouTube in Chrome.
-
-### Workaround: PO Token
-
-For production use, consider installing a PO Token provider plugin:
-```bash
-# See: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-yt-dlp --extractor-args "youtube:po_token=web.gvs+XXX" ...
-```
+YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download, browser cookies (`--cookies-from-browser chrome` auto-detected), and sleep intervals (`--sleep-subtitles 3`). For best reliability, log in to YouTube in Chrome. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
 
 ## Video cleanup and disk usage
 
-The script automatically deletes the downloaded video file after all processing (frame extraction + Whisper transcription if triggered) to prevent disk usage from ballooning. Each run can leave 200MB–1GB of video behind without this.
+The script auto-deletes the downloaded video after processing to prevent disk usage from ballooning (200MB–1GB per run). Use `--keep-video` to retain when needed for follow-up analysis.
 
-**Correct cleanup order:**
-1. Fetch captions (JSON3/VTT) — free, instant
-2. Download video — only if frames are needed
-3. Extract frames from video
-4. Whisper transcription (only if captions were NOT available) — needs video for audio extraction
-5. **Delete video** — everything that needed it is done
+## Troubleshooting
 
-**Pitfall:** Do NOT extract audio "just in case" before frame extraction. Whisper is a fallback that's rarely triggered (most YouTube videos have auto-generated captions). Pre-extracting audio wastes time and disk for the 90%+ case where it's never used.
-
-Use `--keep-video` to retain the downloaded video when needed for follow-up analysis.
-
-## Failure modes and handling
-
-- **Setup preflight failed (exit 2)** → missing binaries. Run `python3 "${SKILL_DIR}/scripts/setup.py"` to install.
-- **Video download fails with HTTP 403** → YouTube 2026 requires deno (JS runtime) + curl_cffi (browser impersonation). Check `ytdlp_deps` in `setup.py --json` output. If missing, run `python3 "${SKILL_DIR}/scripts/setup.py"` — it auto-installs both. Transcripts still work without these — only video download is affected. See `references/youtube-403-download.md`.
-- **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). **Now** ask the user if they want to set up Whisper (see Step 3). Proceed frames-only if they decline.
-- **Transcript in wrong language** → The script now auto-detects video language from metadata and downloads subtitles in the correct language (Indonesian, Spanish, etc.). If the transcript still appears in the wrong language, check that `scripts/language.py` exists and `download.py` is v1.2+. See `references/language-detection-pitfall.md`.
-- **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Subtitle download fails with HTTP 429** → YouTube rate-limits subtitle requests, especially when multiple `yt-dlp` calls hit the same video in quick succession (e.g. `fetch_captions` + `download` both request subs). See `references/youtube-429-rate-limit.md` for full analysis and workarounds. The script tolerates this — if the subtitle file is missing after download, it proceeds without a transcript. **Do NOT re-run immediately** — wait a few minutes or add `--cookies-from-browser chrome` on retry.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
-- **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
+| Problem | Fix | Details |
+|---------|-----|---------|
+| Video download 403 | Install deno + curl_cffi | [youtube-403-download.md](references/youtube-403-download.md) |
+| Subtitle 429 rate limit | Wait + use cookies | [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) |
+| Download throttled | Check network/proxy | [youtube-download-throttling.md](references/youtube-download-throttling.md) |
+| Wrong language subs | Auto-detect fixed in v1.2 | [language-detection-pitfall.md](references/language-detection-pitfall.md) |
+| No transcript | Offer Whisper or frames-only | See Step 3 above |
+| YouTube 2026 deps missing | deno + curl_cffi required | [youtube-2026-download-requirements.md](references/youtube-2026-download-requirements.md) |
+| Setup preflight failed (exit 2) | Missing binaries — run installer | `python3 "${SKILL_DIR}/scripts/setup.py"` |
+| Whisper request failed | Check key or retry other provider | Error on stderr; try `--whisper openai` if Groq failed |
+| Download fails | Check stderr for yt-dlp error | Login-required/region-locked → tell user, don't retry |
 
 ## Token efficiency
 
-This skill burns tokens primarily on frames. Order of magnitude:
-- 80 frames at 512px wide is roughly 50-80k image tokens depending on aspect ratio.
-- The transcript is cheap (a few thousand tokens at most for a 10-minute video).
-- Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
-
-If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
+Frames dominate token cost: 80 frames at 512px ≈ 50-80k image tokens. Transcript is cheap (a few thousand tokens for 10 min). Bumping `--resolution` to 1024 quadruples image tokens — only use when reading on-screen text. Don't re-run if you already have frames+transcript in context.
 
 ## Security & Permissions
 
-**What this skill does:**
-- Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
-- Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
-- **Deletes the downloaded video file after frame extraction** to save disk space (unless `--keep-video` is passed)
-- Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
-- Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
-- Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
-- Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
+Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or OpenAI) when captions are missing — never the video itself. Writes to `~/.config/watch/.env` (mode `0600`). Deletes downloaded video after processing. Does not share API keys between providers, log keys, or persist anything outside the working directory and `.env`. When Chrome cookies are auto-detected, `--cookies-from-browser` is passed for authenticated requests — no credentials are stored or transmitted.
 
-**What this skill does NOT do:**
-- Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data. **Exception:** when Chrome/Chromium cookies are auto-detected, `--cookies-from-browser chrome` is passed to yt-dlp to use your existing browser session for authenticated requests. No credentials are stored or transmitted by this skill; it only reads the browser's local cookie store.
-- Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
-- Does not log, cache, or write API keys to stdout, stderr, or output files
-- Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 6)
+## Reference files (load on demand)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+- [YouTube 403 fix](references/youtube-403-download.md) — deno + curl_cffi setup
+- [YouTube 429 rate limit](references/youtube-429-rate-limit.md) — subtitle throttling
+- [YouTube download throttling](references/youtube-download-throttling.md) — network issues
+- [YouTube 2026 requirements](references/youtube-2026-download-requirements.md) — full requirements
+- [JSON3 format](references/json3-format.md) — subtitle format reference
+- [Language detection](references/language-detection-pitfall.md) — subtitle language issues
 
-Review scripts before first use to verify behavior.
+## Bundled scripts
+
+`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer). Review scripts before first use to verify behavior.
