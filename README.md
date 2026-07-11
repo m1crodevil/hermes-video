@@ -3,13 +3,13 @@
 Hermes Agent:
 
 ```bash
-hermes skill add hermes-video
+hermes skill install watch
 ```
 
 Or install manually:
 
 ```bash
-git clone https://github.com/m1crodevil/hermes-video.git ~/.hermes/skills/video
+git clone https://github.com/m1crodevil/hermes-video.git ~/.hermes/skills/content-creation/watch
 ```
 
 Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
@@ -18,7 +18,7 @@ Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` o
 
 Hermes can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With hermes-video `/watch` you can paste a URL or a local path, ask a question, and Hermes fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and analyzes every frame as an image using MiMo V2.5. By the time it answers, it has *seen* the video and *heard* the audio.
+With hermes-video `/watch` you can paste a URL or a local path, ask a question, and Hermes fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and analyzes every frame as an image and reads the timestamped transcript. By the time it answers, it has *seen* the video and *heard* the audio.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -91,13 +91,13 @@ The `--detail` dial trades speed and token cost for visual fidelity.
 
 | Surface | Install |
 |---------|---------|
-| **Hermes Agent** | `hermes skill add hermes-video` |
+| **Hermes Agent** | `hermes skill install watch` |
 | **Manual / dev** | `git clone` then symlink `skills/watch` into your skills dir |
 
 ### Hermes Agent
 
 ```bash
-hermes skill add hermes-video
+hermes skill install watch
 ```
 
 ### Manual (developer)
@@ -106,7 +106,7 @@ Clone the repo and symlink the self-contained skill folder into your skills dire
 
 ```bash
 git clone https://github.com/m1crodevil/hermes-video.git
-ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/video
+ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 ```
 
 ## First run
@@ -114,8 +114,10 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/video
 On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
 
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
-- **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
+- **Linux (Debian/Ubuntu)** — auto-installs ffmpeg via `apt` (sudo), yt-dlp as standalone binary, deno via install script, curl_cffi via pip. `~/.local/bin` and `~/.deno/bin` auto-added to PATH.
+- **Linux (no sudo)** — yt-dlp + deno install to user directories; ffmpeg needs manual install.
 - **Windows** — prints the `winget` / `pip` commands.
+- **YouTube 2026+** — auto-creates `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno` for YouTube video downloads.
 - **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
@@ -213,6 +215,9 @@ Every `/watch` run produces a validated Pydantic `WatchReport` model containing 
 .
 ├── skills/watch/
 │   ├── SKILL.md                  # skill contract
+│   ├── assets/
+│   │   ├── README.md             # skill-specific README
+│   │   └── CHANGELOG.md          # version history
 │   └── scripts/
 │       ├── watch.py              # entry point
 │       ├── models.py             # Pydantic models (WatchReport, Frame, Transcript, etc.)

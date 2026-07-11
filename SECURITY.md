@@ -42,11 +42,13 @@ All sensitive configuration is stored in:
 ```
 
 **Required:**
-- `OPENCODE_API_KEY` - For MiMo V2.5 via OpenCode Zen
-
 **Optional:**
 - `GROQ_API_KEY` - For Whisper transcription (preferred)
 - `OPENAI_API_KEY` - For Whisper transcription (fallback)
+
+**YouTube 2026+ dependencies:**
+- `deno` - JavaScript runtime for yt-dlp YouTube extraction
+- `curl_cffi` - Python library for impersonated HTTP requests (installed via pip)
 
 ### Data Privacy
 
