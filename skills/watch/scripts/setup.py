@@ -13,7 +13,7 @@ Design:
   keys and only appends missing ones.
 - SETUP_COMPLETE=true in ~/.config/watch/.env tells us the user has been
   through a successful installer run at least once.
-- Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
+- macOS: auto-install via brew. Linux: auto-install via apt / standalone binaries.
 - Never write an API key to disk automatically — only scaffold placeholders.
 """
 from __future__ import annotations
@@ -72,6 +72,10 @@ def _check_ytdlp_deps() -> dict[str, bool]:
     Without these, metadata + subtitles still work but video download gets 403.
     """
     has_deno = _which("deno") is not None
+    # Also check ~/.deno/bin/deno directly (may not be in PATH yet)
+    if not has_deno:
+        deno_path = Path.home() / ".deno" / "bin" / "deno"
+        has_deno = deno_path.is_file()
     has_curl_cffi = False
     try:
         import curl_cffi  # noqa: F401
@@ -183,11 +187,9 @@ def _have_api_key() -> tuple[bool, str | None]:
         return True, "openai"
     return False, None
 
-
 def is_first_run() -> bool:
     """True if the installer hasn't completed successfully yet."""
     return _read_env_key("SETUP_COMPLETE") != "true"
-
 
 def _scaffold_env() -> bool:
     """Create ~/.config/watch/.env with placeholders if missing."""
@@ -226,6 +228,10 @@ def _write_setup_complete() -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# macOS auto-install (brew)
+# ---------------------------------------------------------------------------
+
 def _brew_pkg(missing: list[str]) -> list[str]:
     pkgs: list[str] = []
     for bin_name in missing:
@@ -257,15 +263,267 @@ def _install_macos(missing: list[str]) -> tuple[bool, str]:
     return True, f"installed via brew: {', '.join(pkgs)}"
 
 
-def _install_hint_linux(missing: list[str]) -> str:
-    pkgs = _brew_pkg(missing)
-    hints = []
-    if "ffmpeg" in pkgs:
-        hints.append("apt: `sudo apt install ffmpeg` or dnf: `sudo dnf install ffmpeg`")
-    if "yt-dlp" in pkgs:
-        hints.append("`pipx install yt-dlp` (recommended) or `pip install --user yt-dlp`")
-    return "\n  ".join(hints) if hints else "nothing to install"
+# ---------------------------------------------------------------------------
+# Linux auto-install helpers
+# ---------------------------------------------------------------------------
 
+def _has_sudo() -> bool:
+    """Check if sudo is available and the current user can use it (NOPASSWD)."""
+    if not _which("sudo"):
+        return False
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _has_apt() -> bool:
+    """Check if apt package manager is available."""
+    return _which("apt") is not None
+
+
+def _install_ffmpeg_linux() -> bool:
+    """Install ffmpeg on Linux via apt. Returns True if already present or installed."""
+    if _which("ffmpeg") is not None and _which("ffprobe") is not None:
+        print("[setup] ffmpeg/ffprobe already installed", file=sys.stderr)
+        return True
+
+    if _has_apt() and _has_sudo():
+        print("[setup] installing ffmpeg via apt...", file=sys.stderr)
+        try:
+            result = subprocess.run(
+                ["sudo", "apt", "install", "-y", "ffmpeg"],
+                capture_output=True, timeout=120,
+            )
+            if result.returncode == 0:
+                print("[setup] ffmpeg installed successfully", file=sys.stderr)
+                return True
+            else:
+                stderr = result.stderr.decode(errors="replace").strip()
+                print(f"[setup] apt install ffmpeg failed: {stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"[setup] apt install ffmpeg error: {e}", file=sys.stderr)
+
+    # Fallback: print manual install hint
+    print("[setup] could not auto-install ffmpeg. Please install manually:", file=sys.stderr)
+    print("  sudo apt install ffmpeg        # Debian/Ubuntu", file=sys.stderr)
+    print("  sudo dnf install ffmpeg        # Fedora", file=sys.stderr)
+    print("  sudo pacman -S ffmpeg          # Arch", file=sys.stderr)
+    return False
+
+
+def _install_ytdlp_linux() -> bool:
+    """Install yt-dlp standalone binary on Linux. Returns True if already present or installed."""
+    if _which("yt-dlp") is not None:
+        print("[setup] yt-dlp already installed", file=sys.stderr)
+        return True
+
+    local_bin = Path.home() / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    ytdlp_path = local_bin / "yt-dlp"
+
+    print("[setup] downloading yt-dlp standalone binary...", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            ["curl", "-L", "-o", str(ytdlp_path),
+             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            print(f"[setup] yt-dlp download failed: {stderr}", file=sys.stderr)
+            return False
+
+        ytdlp_path.chmod(0o755)
+        print(f"[setup] yt-dlp installed to {ytdlp_path}", file=sys.stderr)
+
+        # Verify it works
+        if _which("yt-dlp") is None:
+            print("[setup] NOTE: ~/.local/bin not in PATH yet. Run: source ~/.bashrc", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"[setup] yt-dlp install error: {e}", file=sys.stderr)
+        return False
+
+
+def _install_deno() -> bool:
+    """Install deno JS runtime on Linux/macOS. Returns True if already present or installed."""
+    # Check current PATH
+    if _which("deno") is not None:
+        print("[setup] deno already installed", file=sys.stderr)
+        return True
+
+    # Check ~/.deno/bin/deno directly (may not be in PATH yet)
+    deno_path = Path.home() / ".deno" / "bin" / "deno"
+    if deno_path.is_file():
+        print(f"[setup] deno found at {deno_path} (add to PATH)", file=sys.stderr)
+        _ensure_path()
+        return True
+
+    print("[setup] installing deno...", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            "curl -fsSL https://deno.land/install.sh | sh",
+            shell=True, capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            print(f"[setup] deno install failed: {stderr}", file=sys.stderr)
+            return False
+
+        if deno_path.is_file():
+            print("[setup] deno installed successfully", file=sys.stderr)
+            _ensure_path()
+            return True
+        else:
+            print("[setup] deno install completed but binary not found at expected path", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"[setup] deno install error: {e}", file=sys.stderr)
+        return False
+
+
+def _install_curl_cffi() -> bool:
+    """Install curl_cffi Python package. Returns True if already present or installed."""
+    try:
+        import curl_cffi  # noqa: F401
+        print("[setup] curl_cffi already installed", file=sys.stderr)
+        return True
+    except ImportError:
+        pass
+
+    # Try uv first (usually available and handles --system well)
+    if _which("uv") is not None:
+        print("[setup] installing curl_cffi via uv...", file=sys.stderr)
+        try:
+            result = subprocess.run(
+                ["uv", "pip", "install", "--system", "curl-cffi"],
+                capture_output=True, timeout=120,
+            )
+            if result.returncode == 0:
+                print("[setup] curl_cffi installed via uv", file=sys.stderr)
+                return True
+            else:
+                stderr = result.stderr.decode(errors="replace").strip()
+                print(f"[setup] uv install failed: {stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"[setup] uv install error: {e}", file=sys.stderr)
+
+    # Fallback: pip with --break-system-packages (PEP 668 on Ubuntu 24.04+)
+    print("[setup] installing curl_cffi via pip...", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--break-system-packages", "curl-cffi"],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode == 0:
+            print("[setup] curl_cffi installed via pip", file=sys.stderr)
+            return True
+        else:
+            stderr = result.stderr.decode(errors="replace").strip()
+            print(f"[setup] pip install failed: {stderr}", file=sys.stderr)
+    except Exception as e:
+        print(f"[setup] pip install error: {e}", file=sys.stderr)
+
+    # Last resort: try without --break-system-packages
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "curl-cffi"],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode == 0:
+            print("[setup] curl_cffi installed via pip (no --break-system-packages)", file=sys.stderr)
+            return True
+    except Exception:
+        pass
+
+    print("[setup] could not auto-install curl_cffi. Please install manually:", file=sys.stderr)
+    print("  pip install --break-system-packages curl-cffi", file=sys.stderr)
+    print("  # or: uv pip install --system curl-cffi", file=sys.stderr)
+    return False
+
+
+def _ensure_path() -> None:
+    """Add ~/.local/bin and ~/.deno/bin to PATH in ~/.bashrc if not already there."""
+    bashrc = Path.home() / ".bashrc"
+    marker = "# Added by /watch setup"
+
+    # Check what's already in PATH
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    needs_local = str(Path.home() / ".local" / "bin") not in path_dirs
+    needs_deno = str(Path.home() / ".deno" / "bin") not in path_dirs
+
+    if not needs_local and not needs_deno:
+        return
+
+    # Check if we already added the marker to .bashrc
+    if bashrc.exists():
+        try:
+            content = bashrc.read_text(encoding="utf-8")
+            if marker in content:
+                return
+        except OSError:
+            pass
+
+    # Append PATH export to .bashrc
+    path_entry = '\n# Added by /watch setup\nexport PATH="$HOME/.local/bin:$HOME/.deno/bin:$PATH"\n'
+    try:
+        with open(bashrc, "a", encoding="utf-8") as f:
+            f.write(path_entry)
+        print("[setup] added ~/.local/bin and ~/.deno/bin to PATH in ~/.bashrc", file=sys.stderr)
+        print("[setup] run: source ~/.bashrc   (or open a new terminal)", file=sys.stderr)
+    except OSError as e:
+        print(f"[setup] could not update ~/.bashrc: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Linux install orchestrator
+# ---------------------------------------------------------------------------
+
+def _install_linux(missing: list[str]) -> tuple[bool, str]:
+    """Auto-install missing binaries on Linux.
+
+    Returns (success, message). Each sub-installer is idempotent.
+    """
+    results = []
+
+    # 1. ffmpeg via apt
+    ffmpeg_ok = _install_ffmpeg_linux()
+    results.append(("ffmpeg", ffmpeg_ok))
+
+    # 2. yt-dlp via standalone binary
+    ytdlp_ok = _install_ytdlp_linux()
+    results.append(("yt-dlp", ytdlp_ok))
+
+    # 3. deno via install.sh
+    deno_ok = _install_deno()
+    results.append(("deno", deno_ok))
+
+    # 4. curl_cffi via uv/pip
+    curl_cffi_ok = _install_curl_cffi()
+    results.append(("curl_cffi", curl_cffi_ok))
+
+    # 5. Ensure PATH is set up
+    _ensure_path()
+
+    # Report results
+    installed = [name for name, ok in results if ok]
+    failed = [name for name, ok in results if not ok]
+
+    if failed:
+        msg = f"installed: {', '.join(installed)}; needs manual install: {', '.join(failed)}"
+        return False, msg
+    else:
+        return True, f"all dependencies installed: {', '.join(installed)}"
+
+
+# ---------------------------------------------------------------------------
+# Windows hints (no auto-install)
+# ---------------------------------------------------------------------------
 
 def _install_hint_windows(missing: list[str]) -> str:
     pkgs = _brew_pkg(missing)
@@ -276,6 +534,10 @@ def _install_hint_windows(missing: list[str]) -> str:
         hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
     return "\n  ".join(hints) if hints else "nothing to install"
 
+
+# ---------------------------------------------------------------------------
+# yt-dlp deps
+# ---------------------------------------------------------------------------
 
 def _ensure_ytdlp_config() -> None:
     """Create ~/.config/yt-dlp/config with YouTube 2026 flags if missing."""
@@ -291,19 +553,26 @@ def _ensure_ytdlp_config() -> None:
 
 
 def _warn_ytdlp_deps() -> None:
-    """Warn about missing deno/curl_cffi — these cause 403 on video downloads."""
+    """Auto-install missing deno/curl_cffi — these cause 403 on video downloads."""
     deps = _check_ytdlp_deps()
     missing = [k for k, v in deps.items() if not v]
     if not missing:
         return
-    hints = []
+    print("[setup] YouTube 2026 download deps missing — installing...", file=sys.stderr)
     if "deno" in missing:
-        hints.append("  deno: curl -fsSL https://deno.land/install.sh | sh")
+        _install_deno()
     if "curl_cffi" in missing:
-        hints.append("  curl_cffi: pip install --break-system-packages curl-cffi")
-    print("[setup] YouTube 2026 download deps missing (video downloads may 403):", file=sys.stderr)
-    print("\n".join(hints), file=sys.stderr)
+        _install_curl_cffi()
+    # Re-check after install
+    deps_after = _check_ytdlp_deps()
+    still_missing = [k for k, v in deps_after.items() if not v]
+    if still_missing:
+        print(f"[setup] WARNING: could not install {', '.join(still_missing)} — video downloads may 403", file=sys.stderr)
 
+
+# ---------------------------------------------------------------------------
+# Status / check / install
+# ---------------------------------------------------------------------------
 
 def _status() -> dict:
     """Structured preflight snapshot.
@@ -366,7 +635,6 @@ def cmd_check() -> int:
     sys.stderr.flush()
     return 2
 
-
 def cmd_json() -> int:
     json.dump(_status(), sys.stdout, indent=2)
     sys.stdout.write("\n")
@@ -389,9 +657,15 @@ def cmd_install() -> int:
                 return 2
             installed_deps = True
         elif system == "Linux":
-            print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
-            return 2
+            ok, msg = _install_linux(missing)
+            print(f"[setup] {msg}", file=sys.stderr)
+            if not ok:
+                # Check if at least the hard blockers (ffmpeg, yt-dlp) are resolved
+                still_missing = _check_binaries()
+                if still_missing:
+                    print(f"[setup] still missing: {', '.join(still_missing)}", file=sys.stderr)
+                    return 2
+            installed_deps = True
         elif system == "Windows":
             print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
             print("  " + _install_hint_windows(missing), file=sys.stderr)
@@ -413,7 +687,7 @@ def cmd_install() -> int:
     # Create yt-dlp config for YouTube 2026 (impersonate + JS runtime)
     _ensure_ytdlp_config()
 
-    # Warn about missing deno/curl_cffi (non-blocking, just hints)
+    # Auto-install missing deno/curl_cffi (non-blocking)
     _warn_ytdlp_deps()
 
     has_key, backend = _have_api_key()

@@ -51,7 +51,13 @@ fi
 
 **Python interpreter:** every `python3 ...` command in this skill is for macOS/Linux. On **Windows**, substitute `python` — the `python3` command on Windows is the Microsoft Store stub and will not run the script.
 
-**Goal:** make sure binaries (ffmpeg, yt-dlp) are installed and `~/.config/watch/.env` exists. Do NOT ask about Whisper API keys here — that happens later, only if captions are missing.
+**Goal:** make sure binaries (ffmpeg, yt-dlp) are installed, YouTube 2026 deps (deno, curl_cffi) are present, and `~/.config/watch/.env` exists. Do NOT ask about Whisper API keys here — that happens later, only if captions are missing.
+
+**YouTube 2026 deps (required for video downloads, not just transcripts):**
+- **deno** — JS runtime for YouTube challenge solving. Without it, video downloads get HTTP 403. Install: `curl -fsSL https://deno.land/install.sh | sh` then add `~/.deno/bin` to PATH.
+- **curl_cffi** — browser impersonation to bypass bot detection. Install: `pip install --break-system-packages curl-cffi` (or `uv pip install --python <venv-python> curl-cffi` for venvs without pip).
+- The setup script (`setup.py --json`) reports these in the `ytdlp_deps` field and prints install hints when missing. It also auto-creates `~/.config/yt-dlp/config` with `--impersonate chrome --js-runtimes deno`.
+- Without these, transcripts (captions) still work — only video download fails with 403. See `references/youtube-403-download.md` for the full pattern.
 
 ### First run in session
 
@@ -320,6 +326,7 @@ Use `--keep-video` to retain the downloaded video when needed for follow-up anal
 ## Failure modes and handling
 
 - **Setup preflight failed (exit 2)** → missing binaries. Run `python3 "${SKILL_DIR}/scripts/setup.py"` to install.
+- **Video download fails with HTTP 403** → YouTube 2026 requires deno (JS runtime) + curl_cffi (browser impersonation). Check `ytdlp_deps` in `setup.py --json` output. If missing, install deno (`curl -fsSL https://deno.land/install.sh | sh`) and curl_cffi (`pip install --break-system-packages curl-cffi`). Transcripts still work without these — only video download is affected. See `references/youtube-403-download.md`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). **Now** ask the user if they want to set up Whisper (see Step 3). Proceed frames-only if they decline.
 - **Transcript in wrong language** → The script now auto-detects video language from metadata and downloads subtitles in the correct language (Indonesian, Spanish, etc.). If the transcript still appears in the wrong language, check that `scripts/language.py` exists and `download.py` is v1.2+. See `references/language-detection-pitfall.md`.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
