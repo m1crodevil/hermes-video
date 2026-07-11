@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.2.0"
+version: "1.2.1"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -110,6 +110,46 @@ If they skip, keep the recommended default. Do not re-ask when `SETUP_COMPLETE=t
 
 `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, whisper_backend, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use `can_proceed`/`first_run` to decide whether to run; **ignore `needs_key`** — Whisper is handled post-run, not here.
 
+## Structured output (Pydantic models)
+
+The script produces validated output via Pydantic models (`scripts/models.py`). This enables:
+
+- **JSON serialization** — `report.json` written with `--output json` or `--output both`
+- **Markdown rendering** — `report.to_markdown()` produces the human-readable report
+- **Programmatic access** — agent can read `report.json` to access `frames[0].path`, `transcript_segments[i].text`, etc.
+
+### Models
+
+| Model | Purpose |
+|-------|---------|
+| `WatchReport` | Top-level container — metadata, frames, transcript, warnings |
+| `VideoMetadata` | Source URL, title, uploader, duration, resolution, codec |
+| `Frame` | Path, timestamp, reason (scene-change/keyframe/etc), deduped flag |
+| `FrameStats` | Candidates, selected, deduped, engine |
+| `TranscriptSegment` | Start/end time, text, word-level timing (JSON3) |
+| `WordTiming` | Single word with ASR confidence |
+| `FocusRange` | Optional start/end for partial analysis |
+
+### JSON output structure
+
+```json
+{
+  "metadata": {
+    "source": "https://youtu.be/...",
+    "title": "...",
+    "duration": 120.0,
+    "duration_fmt": "02:00",
+    "resolution": "1280x720"
+  },
+  "frames": [
+    {"path": "...", "timestamp": 10.0, "timestamp_fmt": "00:10", "reason": "scene-change"}
+  ],
+  "transcript_segments": [
+    {"start": 10.0, "end": 12.0, "text": "...", "words": [{"word": "...", "start": 10.0, "confidence": 0.95}]}
+  ]
+}
+```
+
 ## Transcription priority (understand this first)
 
 The script uses a **two-tier** transcription pipeline. JSON3 captions are tried first (free, instant). Whisper is only a fallback for videos without native captions:
@@ -141,6 +181,7 @@ Optional flags:
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
+- `--output markdown|json|both` — output format. `markdown` (default) = human-readable report to stdout; `json` = writes `report.json` to work dir; `both` = markdown to stdout + JSON file.
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
@@ -184,7 +225,16 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
   If they want Whisper, run `python3 "${SKILL_DIR}/scripts/setup.py"` to scaffold `.env`, then ask for the API key and write it. Re-run the watch script with the same URL.
   If they decline, proceed frames-only — answer from frames alone.
 
-**Step 4 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
+**Step 4 — view every frame the script lists.** The script outputs frame paths as JPEG files.
+
+**Pitfall (Hermes):** The `read_file` tool cannot handle binary images — it returns "Cannot read binary file". Use `vision_analyze` instead to inspect frame images:
+
+```bash
+# Example: view a frame
+vision_analyze(image_url="/tmp/watch-XXXX/frames/frame_0001.jpg", question="What is shown in this frame?")
+```
+
+For large frame counts (50+), sample representative frames spread evenly rather than loading all of them — vision_analyze calls are expensive. Read 8-15 frames across the video timeline for a good visual overview.
 
 **Step 5 — answer the user.** You now have two streams of evidence:
 - **Frames** — what's on screen at each timestamp
@@ -284,5 +334,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 6)
 
 **Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+
+**Roadmap:** See `references/plan-pydantic-structured-output.md` for the Pydantic structured output refactoring plan (JSON + comprehensive markdown output).
 
 Review scripts before first use to verify behavior.

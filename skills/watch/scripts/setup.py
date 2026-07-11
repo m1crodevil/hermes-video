@@ -33,6 +33,7 @@ from config import get_config  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+REQUIRED_PYTHON_PACKAGES = ["pydantic"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -63,6 +64,26 @@ def _which(name: str) -> str | None:
 
 def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if not _which(b)]
+
+
+def _check_python_packages() -> list[str]:
+    """Check if required Python packages are importable."""
+    missing = []
+    for pkg in REQUIRED_PYTHON_PACKAGES:
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing.append(pkg)
+    return missing
+
+
+def _install_python_packages() -> None:
+    """Install missing Python packages via pip."""
+    missing = _check_python_packages()
+    if not missing:
+        return
+    print(f"[setup] installing Python packages: {', '.join(missing)}", file=sys.stderr)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", *missing])
 
 
 _PERM_WARNED: set[str] = set()
@@ -340,6 +361,9 @@ def cmd_install() -> int:
         print(f"[setup] created config: {CONFIG_FILE}")
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
+
+    # Install missing Python packages (pydantic, etc.)
+    _install_python_packages()
 
     has_key, backend = _have_api_key()
 

@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
@@ -64,7 +65,13 @@ def main() -> int:
         "--no-dedup",
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
-             "frames (static screen recordings, held slides) instead of collapsing them.",
+             "frames (static screen recordings, held slides, paused video) instead of collapsing them.",
+    )
+    ap.add_argument(
+        "--output",
+        choices=["markdown", "json", "both"],
+        default="markdown",
+        help="Output format: markdown (default), json (report.json), or both.",
     )
     args = ap.parse_args()
 
@@ -274,124 +281,80 @@ def main() -> int:
 
     info = dl.get("info") or {}
 
-    print()
-    print("# watch: video report")
-    print()
-    print(f"- **Source:** {args.source}")
-    if info.get("title"):
-        print(f"- **Title:** {info['title']}")
-    if info.get("uploader"):
-        print(f"- **Uploader:** {info['uploader']}")
-    print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
-    if focused:
-        print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
-            f"({effective_duration:.1f}s)"
-        )
-    if meta.get("width") and meta.get("height"):
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
-    range_mode = "focused" if focused else "full"
-    print(f"- **Detail:** {detail}")
-    detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
-        cap_label = "unlimited" if detail_budget is None else str(detail_budget)
-        engine = frame_meta.get("engine", "scene")
-        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
-        deduped = frame_meta.get("deduped_count", 0)
-        dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
-        print(
-            f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
-            f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
-        )
-    elif not cue_frames:
-        print("- **Frames:** skipped (transcript detail)")
-    if cue_frames:
-        dropped = cue_meta.get("dropped_out_of_window", 0)
-        drop_note = f", {dropped} dropped outside range" if dropped else ""
-        print(
-            f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
-            f"(transcript-cue{drop_note})"
-        )
-    if frames:
-        print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
-    if transcript_segments:
-        in_range = " in range" if focused else ""
-        print(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
-        )
-    else:
-        print("- **Transcript:** none available")
-
+    # ── Build structured report ──────────────────────────────────────
+    warnings = []
     if detail == "token-burner" and len(frames) > 250:
-        print()
-        print(
-            f"> **Warning:** token-burner detail selected {len(frames)} frames. "
+        warnings.append(
+            f"Token-burner detail selected {len(frames)} frames. "
             "This may use a large number of image tokens."
         )
-
     if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
         mins = int(full_duration // 60)
-        print()
-        print(
-            f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
+        warnings.append(
+            f"This is a {mins}-minute video. Frame coverage is sparse at this length "
             f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
             "`--detail token-burner` to keep every scene-change frame across the whole video."
         )
-
-    print()
-    print("## Frames")
-    print()
-    if frames:
-        print(f"Frames live at: `{work / 'frames'}`")
-        print()
-        print(
-            "**Read each frame path below with the Read tool to view the image.** "
-            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-        )
-        print()
-        for frame in frames:
-            print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
+    if not transcript_segments:
+        if detail == "transcript":
+            warnings.append(
+                "No transcript available at transcript detail. Captions were missing and Whisper was "
+                "unavailable or failed, so there is no visual fallback here. Re-run with "
+                "`--detail balanced` for frames."
             )
-    else:
-        print("_No frames extracted._")
-
-    print()
-    print("## Transcript")
-    print()
-    if transcript_text:
-        label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
+        elif focused and dl.get("subtitle_path"):
+            warnings.append(
+                f"No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}."
+            )
         else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
-    elif detail == "transcript":
-        print(
-            "_No transcript available at transcript detail. Captions were missing and Whisper was "
-            "unavailable or failed, so there is no visual fallback here. Re-run with "
-            "`--detail balanced` for frames._"
-        )
-    elif focused and dl.get("subtitle_path"):
-        print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
-    else:
-        setup_py = SCRIPT_DIR / "setup.py"
-        print(
-            "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
-            "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
-        )
+            setup_py = SCRIPT_DIR / "setup.py"
+            warnings.append(
+                "No transcript available — proceed with frames only. "
+                "Captions were missing and the Whisper fallback was unavailable "
+                "(no API key set, or `--no-whisper` was used). "
+                f"Run `python3 {setup_py}` to enable Whisper, then re-run."
+            )
 
-    print()
-    print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    report = build_report(
+        source=args.source,
+        title=info.get("title"),
+        uploader=info.get("uploader"),
+        duration=full_duration,
+        width=meta.get("width"),
+        height=meta.get("height"),
+        codec=meta.get("codec"),
+        has_audio=meta.get("has_audio", False),
+        detected_language=dl.get("detected_language"),
+        detail=detail,
+        focus_start=effective_start if focused else None,
+        focus_end=effective_end if focused else None,
+        frames=frames,
+        frame_meta=frame_meta if frame_meta.get("selected_count", 0) > 0 else None,
+        transcript_source=transcript_source or ("none" if not transcript_segments else "captions"),
+        transcript_segments=transcript_segments,
+        transcript_text=transcript_text,
+        warnings=warnings,
+    )
+
+    # ── Output ───────────────────────────────────────────────────────
+    output_mode = args.output
+
+    if output_mode in ("markdown", "both"):
+        print(report.to_markdown())
+        # Footer
+        print()
+        print("---")
+        print(f"_Work dir: `{work}` — delete when done._")
+
+    if output_mode in ("json", "both"):
+        json_path = work / "report.json"
+        report.to_json_file(json_path)
+        if output_mode == "json":
+            # JSON-only: print path so agent can find it
+            print(f"Report written to: {json_path}")
+        else:
+            print(f"\n_Report JSON: `{json_path}`_")
 
     return 0
 
