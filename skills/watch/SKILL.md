@@ -112,6 +112,23 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 python3 "${SKILL_DIR}/scripts/watch.py" "<source>"
 ```
 
+**Step 2b — read metadata from report.json (MANDATORY).** The script now defaults to `--output both`, which writes `report.json` alongside the markdown output. **Always read this file for metadata** — do NOT rely solely on the markdown output which may be truncated for long videos:
+
+```bash
+# Find the work dir from the script output, then:
+python3 -c "
+import json
+with open('<workdir>/report.json') as f:
+    d = json.load(f)
+m = d['metadata']
+print(f'Title: {m[\"title\"]}')
+print(f'Channel: {m[\"uploader\"]} ({m.get(\"channel_follower_count\",\"?\")} subs)')
+print(f'Views: {m.get(\"view_count\",\"?\")} | Likes: {m.get(\"like_count\",\"?\")}')
+print(f'Published: {m.get(\"upload_date\",\"?\")}')
+print(f'Duration: {m[\"duration\"]}s')
+"
+```
+
 **Pitfall:** yt-dlp's `--convert-subs json3` does NOT work. The script handles this automatically via `--sub-format "json3/best"`.
 
 Optional flags:
@@ -122,7 +139,7 @@ Optional flags:
 - `--resolution W` — frame width in px (default 512; bump to 1024 only for on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
 - `--out-dir DIR` — working files location (default: auto-generated tmp dir)
-- `--output markdown|json|both` — `markdown` (default) = stdout; `json` = writes `report.json`; `both` = both.
+- `--output markdown|json|both` — `both` (default) = markdown (compact, no full transcript) + `report.json`; `markdown` = full markdown; `json` = report.json only.
 - `--whisper groq|openai` — force a specific backend (default: prefer Groq)
 - `--no-whisper` — disable Whisper fallback entirely
 - `--no-dedup` — keep near-duplicate frames (usually dropped to save budget)

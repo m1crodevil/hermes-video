@@ -259,8 +259,12 @@ class WatchReport(BaseModel):
 
     # ── Markdown Renderer ────────────────────────────────────────────
 
-    def to_markdown(self) -> str:
-        """Render comprehensive markdown report for human reading."""
+    def to_markdown(self, compact: bool = False) -> str:
+        """Render comprehensive markdown report for human reading.
+        
+        When compact=True, skips the full transcript section (useful when
+        output is also written to JSON, to avoid terminal truncation).
+        """
         lines: list[str] = []
 
         # Header
@@ -340,7 +344,10 @@ class WatchReport(BaseModel):
             lines.append(f"- **Segments:** {len(self.transcript_segments)}")
             lines.append("")
 
-            if self.transcript_text:
+            if compact:
+                lines.append("_Full transcript available in `report.json`._")
+                lines.append("")
+            elif self.transcript_text:
                 lines.append("### Full Transcript")
                 lines.append("")
                 lines.append("```")

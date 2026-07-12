@@ -96,8 +96,8 @@ def main() -> int:
     ap.add_argument(
         "--output",
         choices=["markdown", "json", "both"],
-        default="markdown",
-        help="Output format: markdown (default), json (report.json), or both.",
+        default="both",
+        help="Output format: both (default, markdown + report.json), markdown, or json.",
     )
     args = ap.parse_args()
 
@@ -402,7 +402,9 @@ def main() -> int:
     output_mode = args.output
 
     if output_mode in ("markdown", "both"):
-        print(report.to_markdown())
+        # When output is "both", use compact mode to avoid terminal truncation
+        # (full transcript is in report.json)
+        print(report.to_markdown(compact=(output_mode == "both")))
         # Footer
         print()
         print("---")
