@@ -216,6 +216,34 @@ The terminal tool truncates output beyond ~50K chars. For long videos (>20 min),
 - **No question** → summarize what happens in the video
 - **Transcript-only mode** → synthesize structure and key moments, don't paste full transcript
 
+### Output format (Telegram)
+
+Always use this exact structure when delivering watch results:
+
+```
+🎬 **[Video Title]**
+Channel: [Uploader] ([subscribers] subs)
+Published: [date] | Duration: [time]
+Views: [N] · Likes: [N] · Comments: [N]
+
+---
+
+[Summary/answer content here]
+
+---
+
+_Work dir: `[path]` — frames + transcript retained._
+```
+
+**Rules:**
+- Use `**bold**` for title only
+- Use plain text for metadata (no `• : ` prefix)
+- Use `·` (middle dot) as separator, not `|` or `,`
+- Keep metadata compact on 1-2 lines
+- Add `---` separator before and after main content
+- Always include work dir footer
+- **NEVER** use raw markdown table syntax (`| col | col |`) in Telegram output — it doesn't render properly
+
 **Step 6 — follow-ups.** The downloaded video is auto-deleted. Frames and transcript remain in the working directory. Answer follow-ups from what you already have — do NOT re-run the script. If no follow-ups expected, clean up with `rm -rf <dir>`.
 
 ## Detail and frames
