@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.9.0"
+version: "1.10.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -94,9 +94,10 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 
 ## Workflow
 
-- [ ] Step 0: Setup preflight (`setup.py --json`)
+-- [ ] Step 0: Setup preflight (`setup.py --json`)
 - [ ] Step 1: Parse source + question from user input
 - [ ] Step 2: Run `watch.py "<source>"` with appropriate flags
+- [ ] Step 2b: Collect metadata + stats from work dir (**MANDATORY — always, even on timeout**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
 - [ ] Step 4: `vision_analyze` 8-15 representative frames
 - [ ] Step 5: Answer user (specific question OR summarize)
@@ -112,10 +113,10 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 python3 "${SKILL_DIR}/scripts/watch.py" "<source>"
 ```
 
-**Step 2b — read metadata from report.json (MANDATORY).** The script now defaults to `--output both`, which writes `report.json` alongside the markdown output. **Always read this file for metadata** — do NOT rely solely on the markdown output which may be truncated for long videos:
+**Step 2b — collect metadata + stats from work dir (MANDATORY).** Always run this step — even when the script times out or crashes. The work dir already contains everything needed.
 
+**Primary path (report.json exists):**
 ```bash
-# Find the work dir from the script output, then:
 python3 -c "
 import json
 with open('<workdir>/report.json') as f:
@@ -126,6 +127,44 @@ print(f'Channel: {m[\"uploader\"]} ({m.get(\"channel_follower_count\",\"?\")} su
 print(f'Views: {m.get(\"view_count\",\"?\")} | Likes: {m.get(\"like_count\",\"?\")}')
 print(f'Published: {m.get(\"upload_date\",\"?\")}')
 print(f'Duration: {m[\"duration\"]}s')
+"
+```
+
+**Fallback path (report.json missing — timeout/crash):**
+When the script exits with code 124 (timeout) or any non-zero code, `report.json` will NOT exist. **Do NOT skip stats.** Collect from raw files instead:
+```bash
+python3 -c "
+import json, os, glob
+work = '<workdir>'
+# Metadata from yt-dlp
+info_path = os.path.join(work, 'download', 'video.info.json')
+if os.path.exists(info_path):
+    with open(info_path) as f: info = json.load(f)
+    print(f\"Title: {info.get('title','?')}\")
+    print(f\"Channel: {info.get('uploader','?')} ({info.get('channel_follower_count','?')} subs)\")
+    print(f\"Views: {info.get('view_count','?')} · Likes: {info.get('like_count','?')} · Comments: {info.get('comment_count','?')}\")
+    print(f\"Published: {info.get('upload_date','?')}\")
+    print(f\"Duration: {info.get('duration',0)}s\")
+    print(f\"Resolution: {info.get('width','?')}x{info.get('height','?')}\")
+# Frame count
+frames = glob.glob(os.path.join(work, 'frames', '*.jpg'))
+print(f\"Frames: {len(frames)}\")
+# Transcript segments
+for f in glob.glob(os.path.join(work, 'download', '*.json3')):
+    with open(f) as fh: events = json.load(fh).get('events',[])
+    segs = sum(1 for e in events if e.get('segs'))
+    print(f\"Transcript: {segs} segments [{os.path.basename(f)}]\")
+    break
+# Key moments / vision results
+for name in ['key_moments.json', 'vision_results.json']:
+    p = os.path.join(work, name)
+    if os.path.exists(p):
+        with open(p) as fh: data = json.load(fh)
+        print(f\"{name}: {len(data)} entries\")
+# Stats.json if present
+stats_p = os.path.join(work, 'stats.json')
+if os.path.exists(stats_p):
+    with open(stats_p) as fh: print(json.dumps(json.load(fh), indent=2))
 "
 ```
 
@@ -224,6 +263,8 @@ The terminal tool truncates output beyond ~50K chars. For long videos (>20 min),
 
 ### Output format (Telegram)
 
+**Stats are MANDATORY in every deliverable.** Never omit the stats block.
+
 Always use this exact structure when delivering watch results:
 
 ```
@@ -238,6 +279,17 @@ Views: [N] · Likes: [N] · Comments: [N]
 
 ---
 
+📊 **Analysis Stats**
+━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ Processing Time: [X]s
+🎬 Video Duration: [time]
+📐 Resolution: [WxH]
+🖼️ Frames Extracted: [N] @ [resolution]px ([engine])
+📝 Transcript: [N] segments [source]
+🎯 Key Moments: [N] detected ([N] critical)
+🔍 Vision Verifications: [N] completed ([N] corrections)
+━━━━━━━━━━━━━━━━━━━━━━━━
+
 _Work dir: `[path]` — frames + transcript retained._
 ```
 
@@ -249,6 +301,9 @@ _Work dir: `[path]` — frames + transcript retained._
 - Add `---` separator before and after main content
 - Always include work dir footer
 - **NEVER** use raw markdown table syntax (`| col | col |`) in Telegram output — it doesn't render properly
+- Always include stats block — compile manually if `report.json` is missing
+
+**Stats collection (MANDATORY):** Always run **Step 2b** (primary or fallback path) to collect stats. The fallback one-liner reads from raw files when `report.json` is missing. Processing time: use the time from the script output, or estimate from terminal timeout. Never omit the stats block.
 
 **Step 6 — follow-ups.** The downloaded video is auto-deleted. Frames and transcript remain in the working directory. Answer follow-ups from what you already have — do NOT re-run the script. If no follow-ups expected, clean up with `rm -rf <dir>`.
 
@@ -485,11 +540,12 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 ## Pitfalls
 
-**Long videos (>30 min) timeout on frame extraction.** Scene-aware extraction on 80+ minute videos can exceed 300s timeout even when the video downloads fine. Mitigations:
+**Long videos (>30 min) timeout on frame extraction.** Scene-aware extraction on 80+ minute videos can exceed 300s timeout even when the video downloads fine. **This is expected behavior — do NOT treat it as a failure.** Frames extracted before timeout are still usable. **Design principle: let the agent handle post-hoc collection rather than over-engineering Python timeout/retry logic.** The agent can read raw files from the work dir at any time — `video.info.json`, `frames/*.jpg`, `.json3` subtitles — regardless of whether the script completed. Adding complex fallback paths in Python (partial writes, timeout-aware retries, signal handlers) is almost always the wrong tradeoff vs. a simple fallback one-liner in the skill. Mitigations:
 - Use `--detail efficient` (keyframes only, near-instant) for long videos where transcript is the primary evidence
 - Use `--detail transcript` when captions exist — no video download needed
 - Use `--max-frames 50` to cap extraction even in balanced mode
 - If timeout occurs, frames already extracted before timeout are still usable — check the frames directory
+- **When timeout happens, `report.json` will NOT exist.** Run Step 2b fallback path to collect metadata + stats from raw files (`video.info.json`, `frames/`, subtitle `.json3`). Stats are MANDATORY in every deliverable — never omit the stats block.
 
 **No captions + no Whisper = frames-only.** For videos without native captions, the agent should offer transcription options at Step 3, not before. Options include free local (faster-whisper) and paid cloud (Groq Whisper). If user declines all transcription, frames-only is a valid fallback but severely limits analysis for dialogue-heavy content (podcasts, interviews). See [groq-whisper-limits.md](references/groq-whisper-limits.md) for Groq pricing and [free-transcription-alternatives.md](references/free-transcription-alternatives.md) for free alternatives.
 

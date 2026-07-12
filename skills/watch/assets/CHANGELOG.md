@@ -2,6 +2,19 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.10.0] — 2026-07-12
+
+### Changed
+- **Mandatory stats collection (Step 2b).** Stats are now always collected from the work directory, even when the script times out or crashes. Added a fallback one-liner that reads `video.info.json`, `frames/`, and subtitle `.json3` files when `report.json` is missing.
+- Workflow checklist now includes Step 2b as a mandatory step between script execution and transcript check.
+- Pitfalls section: timeout on long videos is now framed as expected behavior, not a failure. Agent is instructed to collect stats via fallback path instead of skipping them.
+- Version bumped from 1.9.0 to 1.10.0.
+
+## [1.8.1] — 2026-07-12
+
+### Fixed
+- **FrameReason enum missing `gap-fill` value.** `frames.py` emits `reason="gap-fill"` for gap-filled frames during scene detection on long videos, but the `FrameReason` enum in `models.py` didn't include it. This caused a `PydanticValidationError` crash on videos >10 min where gap-filling kicked in. Added `GAP_FILL = "gap-fill"` to the enum. Commit: `a616ba6`.
+
 ## [1.8.0] — 2026-07-12
 
 ### Added
