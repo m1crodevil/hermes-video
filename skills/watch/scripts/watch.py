@@ -7,6 +7,7 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, ext
 from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+from transcript_moments import generate_prompt, format_transcript_for_analysis  # noqa: E402
 
 
 def _cleanup_video(video_path: str | None, downloaded: bool, keep: bool) -> None:
@@ -98,6 +100,17 @@ def main() -> int:
         choices=["markdown", "json", "both"],
         default="both",
         help="Output format: both (default, markdown + report.json), markdown, or json.",
+    )
+    ap.add_argument(
+        "--auto-moments",
+        action="store_true",
+        help="Generate LLM prompt for key moment detection from transcript.",
+    )
+    ap.add_argument(
+        "--max-moments",
+        type=int,
+        default=15,
+        help="Maximum key moments to identify (default 15, used with --auto-moments).",
     )
     args = ap.parse_args()
 
@@ -375,6 +388,53 @@ def main() -> int:
                 f"Run `python3 {setup_py}` to enable Whisper, then re-run."
             )
 
+    # ── Auto-moments: Generate LLM prompt for key moment detection ──
+    key_moments_data: list[dict] = []
+    key_moment_stats_data: dict | None = None
+    moments_prompt_path: Path | None = None
+    moments_json_path: Path | None = None
+
+    if args.auto_moments and transcript_segments:
+        # Generate LLM prompt for moment detection
+        transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+        moments_prompt = generate_prompt(
+            transcript_for_analysis,
+            info,
+            max_moments=args.max_moments,
+        )
+
+        # Write prompt to file for agent to process
+        moments_prompt_path = work / "moments_prompt.txt"
+        moments_prompt_path.write_text(moments_prompt, encoding="utf-8")
+
+        # Check if agent already provided moments (from previous run)
+        moments_json_path = work / "key_moments.json"
+        if moments_json_path.exists():
+            try:
+                key_moments_data = json.loads(moments_json_path.read_text())
+                print(
+                    f"[watch] loaded {len(key_moments_data)} key moments from existing file",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(f"[watch] failed to load key_moments.json: {exc}", file=sys.stderr)
+                key_moments_data = []
+
+        # Calculate stats
+        if key_moments_data:
+            by_reason: dict[str, int] = {}
+            by_priority: dict[int, int] = {}
+            for m in key_moments_data:
+                reason = m.get("reason", "unknown")
+                priority = m.get("priority", 3)
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+                by_priority[priority] = by_priority.get(priority, 0) + 1
+            key_moment_stats_data = {
+                "total": len(key_moments_data),
+                "by_reason": by_reason,
+                "by_priority": by_priority,
+            }
+
     report = build_report(
         source=args.source,
         title=info.get("title"),
@@ -407,6 +467,8 @@ def main() -> int:
         transcript_source=transcript_source or ("none" if not transcript_segments else "captions"),
         transcript_segments=transcript_segments,
         transcript_text=transcript_text,
+        key_moments=key_moments_data,
+        key_moment_stats=key_moment_stats_data,
         warnings=warnings,
     )
 
@@ -435,6 +497,25 @@ def main() -> int:
             print(f"Report written to: {json_path}")
         else:
             print(f"\n_Report JSON: `{json_path}`_")
+
+    # ── Auto-moments output ──────────────────────────────────────────
+    if args.auto_moments and moments_prompt_path:
+        if key_moments_data:
+            # Moments already loaded
+            print(f"\n✅ {len(key_moments_data)} key moments loaded from `{moments_json_path}`")
+            print("\nNext steps for agent:")
+            print("1. Extract frames at key moment timestamps (if not already extracted)")
+            print("2. Call vision_analyze on each frame with moment.question")
+            print("3. Update key_moments.json with vision results")
+            print("4. Re-run watch.py --auto-moments to include results in report")
+        else:
+            # Need agent to process prompt
+            print(f"\n📝 LLM prompt written to: `{moments_prompt_path}`")
+            print("\nAgent workflow:")
+            print(f"1. Read the prompt from `{moments_prompt_path}`")
+            print("2. Analyze transcript and identify key moments")
+            print(f"3. Write moments as JSON to `{moments_json_path}`")
+            print("4. Re-run watch.py --auto-moments to include results in report")
 
     return 0
 
