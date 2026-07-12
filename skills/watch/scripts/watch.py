@@ -17,7 +17,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import frame_cap, get_config  # noqa: E402
+from config import DEFAULT_MIN_MOMENTS, frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, extract_two_pass, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from models import build_report  # noqa: E402
@@ -62,7 +62,7 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
     ap.add_argument(
         "--detail",
-        choices=["transcript", "efficient", "balanced", "token-burner"],
+        choices=["transcript", "transcript-moments", "efficient", "balanced", "token-burner"],
         default=None,
         help="Fidelity/speed dial: transcript (no frames), efficient (fast keyframes, cap 50), "
              "balanced (scene, cap 100), token-burner (scene, uncapped).",
@@ -118,6 +118,12 @@ def main() -> int:
         help="Maximum key moments to identify (default 15, used with --auto-moments).",
     )
     ap.add_argument(
+        "--min-moments",
+        type=int,
+        default=None,
+        help="Minimum moments for transcript-moments mode (default from config, typically 50).",
+    )
+    ap.add_argument(
         "--stats",
         action="store_true",
         help="Include analysis stats in output (processing time, frames, tokens, etc.).",
@@ -141,6 +147,9 @@ def main() -> int:
         raise SystemExit("--max-frames must be greater than zero")
     budget_cap = max_frames if max_frames is not None else 100
     cue_timestamps = parse_timestamps(args.timestamps)
+
+    # Resolve min_moments for transcript-moments mode
+    min_moments = args.min_moments or config.get("min_moments", DEFAULT_MIN_MOMENTS)
 
     if args.out_dir:
         work = Path(args.out_dir).expanduser().resolve()
@@ -174,12 +183,17 @@ def main() -> int:
 
     # --timestamps needs the video for frame grabs, so it overrides the
     # transcript-mode download skip (and forces a full, not audio-only, fetch).
+    # transcript-moments: need video only if key_moments.json exists (re-run)
+    moments_json_path = work / "key_moments.json"
+    has_moments = detail == "transcript-moments" and moments_json_path.exists()
     audio_only = detail == "transcript" and not cue_timestamps
+    need_video = not (detail == "transcript" and transcript_segments and not cue_timestamps)
+    # For transcript-moments first run (no key_moments.json yet), skip video download
+    if detail == "transcript-moments" and not has_moments and transcript_segments:
+        need_video = False
     # Pass existing subtitle to download_url() to prevent 429 re-download
     existing_sub = dl.get("subtitle_path") if dl.get("subtitle_path") else None
-    if detail == "transcript" and transcript_segments and not cue_timestamps:
-        video_path = None
-    else:
+    if need_video:
         if url_source:
             print(
                 "[watch] downloading audio via yt-dlp…" if audio_only
@@ -262,7 +276,78 @@ def main() -> int:
             )
 
     detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
-    if detail != "transcript" and video_path and detail_budget != 0:
+
+    # ── Transcript-moments mode: extract frames at LLM-identified timestamps ──
+    if detail == "transcript-moments":
+        if has_moments and video_path:
+            # Re-run: key_moments.json exists — extract frames at those timestamps
+            moments_data = json.loads(moments_json_path.read_text())
+            moment_timestamps = []
+            for m in moments_data:
+                ts = m.get("timestamp", 0)
+                if isinstance(ts, str):
+                    parts = ts.strip().split(":")
+                    if len(parts) == 2:
+                        ts = int(parts[0]) * 60 + float(parts[1])
+                    elif len(parts) == 3:
+                        ts = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                    else:
+                        ts = float(ts)
+                moment_timestamps.append(float(ts))
+            moment_timestamps = sorted(set(moment_timestamps))
+
+            print(
+                f"[watch] transcript-moments: extracting {len(moment_timestamps)} frames "
+                f"at LLM-identified timestamps…",
+                file=sys.stderr,
+            )
+            frames, frame_meta = extract_at_timestamps(
+                video_path,
+                work / "frames",
+                moment_timestamps,
+                resolution=args.resolution,
+                max_frames=None,  # uncapped — extract all moments
+                start_seconds=start_sec,
+                end_seconds=end_sec,
+            )
+            # Mark all as transcript-cue reason
+            for f in frames:
+                f["reason"] = "transcript-cue"
+        else:
+            # First run: generate prompt for agent, skip frame extraction
+            from transcript_moments import format_transcript_for_analysis, generate_prompt
+
+            transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+            info = dl.get("info") or {}
+            moments_prompt = generate_prompt(
+                transcript_for_analysis,
+                info,
+                max_moments=min_moments,
+                min_moments=min_moments,
+            )
+            moments_prompt_path = work / "moments_prompt.txt"
+            moments_prompt_path.write_text(moments_prompt, encoding="utf-8")
+            print(
+                f"[watch] transcript-moments: first run — prompt written to {moments_prompt_path}",
+                file=sys.stderr,
+            )
+            print(
+                f"[watch] Agent workflow:", file=sys.stderr,
+            )
+            print(
+                f"  1. Read {moments_prompt_path}", file=sys.stderr,
+            )
+            print(
+                f"  2. Analyze transcript, identify {min_moments}+ key moments", file=sys.stderr,
+            )
+            print(
+                f"  3. Write moments as JSON to {moments_json_path}", file=sys.stderr,
+            )
+            print(
+                f"  4. Re-run watch.py with same args to extract frames", file=sys.stderr,
+            )
+
+    elif detail != "transcript" and video_path and detail_budget != 0:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -371,7 +456,7 @@ def main() -> int:
             f"Token-burner detail selected {len(frames)} frames. "
             "This may use a large number of image tokens."
         )
-    if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
+    if not focused and full_duration > 600 and detail not in ("transcript", "transcript-moments", "token-burner"):
         mins = int(full_duration // 60)
         warnings.append(
             f"This is a {mins}-minute video. Frame coverage is sparse at this length "
@@ -408,7 +493,30 @@ def main() -> int:
     key_moments_data: list[dict] = []
     key_moment_stats_data: dict | None = None
     moments_prompt_path: Path | None = None
-    moments_json_path: Path | None = None
+
+    # Load key_moments.json for transcript-moments mode (already extracted)
+    if detail == "transcript-moments" and moments_json_path.exists():
+        try:
+            key_moments_data = json.loads(moments_json_path.read_text())
+            print(
+                f"[watch] loaded {len(key_moments_data)} key moments from {moments_json_path}",
+                file=sys.stderr,
+            )
+            # Calculate stats
+            by_reason: dict[str, int] = {}
+            by_priority: dict[int, int] = {}
+            for m in key_moments_data:
+                reason = m.get("reason", "unknown")
+                priority = m.get("priority", 3)
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+                by_priority[priority] = by_priority.get(priority, 0) + 1
+            key_moment_stats_data = {
+                "total": len(key_moments_data),
+                "by_reason": by_reason,
+                "by_priority": by_priority,
+            }
+        except Exception as exc:
+            print(f"[watch] failed to load key_moments.json: {exc}", file=sys.stderr)
 
     if args.auto_moments and transcript_segments:
         # Generate LLM prompt for moment detection
@@ -417,6 +525,7 @@ def main() -> int:
             transcript_for_analysis,
             info,
             max_moments=args.max_moments,
+            min_moments=min_moments,
         )
 
         # Write prompt to file for agent to process

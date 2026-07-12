@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.11.0"
+version: "1.12.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -94,7 +94,32 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 
 ## Workflow
 
--- [ ] Step 0: Setup preflight (`setup.py --json`)
+### Transcript-First Mode (recommended for videos with captions)
+
+When captions are available, this is the **fastest and most accurate** approach:
+
+- [ ] Step 0: Setup preflight (`setup.py --json`)
+- [ ] Step 1: Parse source + question from user input
+- [ ] Step 2: Run `watch.py "<source>" --detail transcript-moments --min-moments 50`
+  - First run: generates moments prompt (no video download, ~15s)
+  - Script prints instructions for agent workflow
+- [ ] Step 2b: Process moments prompt
+  - Read `<workdir>/moments_prompt.txt`
+  - Analyze transcript, identify 50+ key moments
+  - Write moments as JSON to `<workdir>/key_moments.json`
+- [ ] Step 2c: Re-run `watch.py` with same args (video downloads + frames extracted)
+  - Or: use `background=true` for the re-run
+- [ ] Step 2d: Collect metadata + stats from work dir (**MANDATORY**)
+- [ ] Step 3: Check transcript → if missing, offer Whisper
+- [ ] Step 4: `vision_analyze` 8-15 representative frames (from the 50+ extracted)
+- [ ] Step 5: Answer user (specific question OR summarize)
+- [ ] Step 6: Handle follow-ups from context, cleanup
+
+### Classic Mode (scene detection)
+
+For videos **without captions** or when visual coverage is needed:
+
+- [ ] Step 0: Setup preflight (`setup.py --json`)
 - [ ] Step 1: Parse source + question from user input
 - [ ] Step 2: Run `watch.py "<source>"` with appropriate flags
   - Short video (<10 min) / transcript mode → **foreground** `terminal(timeout=300)`
@@ -131,11 +156,12 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<source>" --stats
 
 **Step 2b — wait for completion (background mode only).** When Step 2 used `background=true`:
 
-1. `process(action='wait', session_id=<from Step 2>, timeout=900)` — blocks until done OR 15-min timeout
-2. `process(action='log', session_id=<from Step 2>)` — get stdout/stderr output
-3. Parse work dir path from output: `[watch] working dir: /tmp/watch-XXXX`
-4. If the process exited with code 0 → `report.json` exists → proceed to Step 2c primary path
-5. If non-zero exit or timeout → `report.json` missing → proceed to Step 2c fallback path
+1. `process(action='wait', session_id=<from Step 2>, timeout=900)` — blocks until done OR timeout
+2. **Pitfall: `process(action='wait')` timeout is clamped to 60s** by the runtime, regardless of the `timeout` parameter you pass. For long videos (20+ min), the first `wait` will almost always time out before the script finishes. **Loop the wait:** after each timeout, call `wait` again. Use `process(action='poll')` between waits to check if the process is still running. Typical pattern for a 50-min video: 4-6 wait cycles.
+3. `process(action='log', session_id=<from Step 2>)` — get stdout/stderr output
+4. Parse work dir path from output: `[watch] working dir: /tmp/watch-XXXX`
+5. If the process exited with code 0 → `report.json` exists → proceed to Step 2c primary path
+6. If non-zero exit or timeout → `report.json` missing → proceed to Step 2c fallback path
 
 **Step 2c — collect metadata + stats from work dir (MANDATORY).** Always run this step — even when the script times out or crashes. The work dir already contains everything needed.
 
@@ -211,6 +237,7 @@ Optional flags:
 - `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
 - `--auto-moments` — generate LLM prompt for key moment detection from transcript (see "LLM-Driven Moment Detection" below)
 - `--max-moments N` — maximum key moments to identify (default 15, used with `--auto-moments`)
+- `--min-moments N` — minimum moments for transcript-moments mode (default 50)
 - `--stats` — include analysis stats in output (processing time, frames, tokens, etc.)
 - `--stats-format telegram|compact` — stats output format (default: telegram)
 
@@ -338,7 +365,20 @@ Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
 
-**transcript** — captions only; no video download when captions exist. **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames with adaptive thresholding; balanced caps at 100, token-burner uses two-pass (scene detection + uniform sampling) and is uncapped. Frame report lines include timestamp and selection reason.
+**transcript** — captions only; no video download when captions exist. **transcript-moments** — captions + LLM-driven moment detection + frame extraction at 50+ timestamps (recommended for long videos with captions). **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames with adaptive thresholding; balanced caps at 100, token-burner uses two-pass (scene detection + uniform sampling) and is uncapped. Frame report lines include timestamp and selection reason.
+
+### Detail mode comparison
+
+| Mode | Speed (54 min) | Frames | Best for | Misses |
+|---|---|---|---|---|
+| `transcript` | ~5s | 0 | Dialogue-heavy, transcript-first | All visual context |
+| `efficient` | ~10-20s | ≤50 (I-frames) | Quick overview, hard cuts | Gradual transitions, talking head between keyframes |
+| `balanced` | ~300s | ≤100 (scene-aware) | Most content, recommended | Very slow for >30 min videos |
+| `token-burner` | ~500s+ | uncapped | Max fidelity, short videos | Token-expensive |
+
+**Rule of thumb:** For videos >20 min where transcript is the primary evidence, use `efficient` or `balanced --max-frames 50`. For podcast/talk show with mostly static camera, `efficient` misses little. For documentary/vlog with frequent visual changes, `balanced` is worth the wait.
+
+**Scene detection performance:** For long videos (>30 min), scene detection dominates processing time (~300s for 54 min) because ffmpeg must decode every frame. See [scene-detection-optimization.md](references/scene-detection-optimization.md) for proposed fps downsampling technique and speedup estimates.
 
 ### Adaptive scene detection
 
@@ -628,6 +668,7 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [YouTube metadata extraction](references/youtube-metadata-extraction.md) — yt-dlp channel/video stats without API key, channel handle resolution, YouTube Data API v3 free tier
 - [Truncation-fabrication incident](references/truncation-fabrication-incident.md) — case study: terminal output truncation led to fabricated metadata, fixes applied
 - [Scene detection optimization](references/scene-detection-optimization.md) — adaptive thresholds, hybrid approaches, gap-filling for long videos
+- [Scene detection bottleneck](references/scene-detection-bottleneck.md) — why full decode is unavoidable, transcript-first extraction advantage
 - [Transcript proofreading tools](references/transcript-proofreading-tools.md) — landscape of subtitle correction tools (Whisply, skill-caption-clip, DIY LLM approaches)
 - [JSON3 transcript-frame alignment](references/json3-transcript-frame-alignment.md) — word-level timing, LLM-driven moment detection, cross-referencing transcript with visual evidence
 - [Speaker diarization research](references/speaker-diarization-research.md) — WhisperX, pyannote, audio-visual diarization tools, practical recommendations
