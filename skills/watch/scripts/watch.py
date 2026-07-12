@@ -24,6 +24,7 @@ from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from transcript_moments import generate_prompt, format_transcript_for_analysis  # noqa: E402
+from stats_collector import StatsTimer, collect_stats, format_stats_telegram, format_stats_compact  # noqa: E402
 
 
 def _cleanup_video(video_path: str | None, downloaded: bool, keep: bool) -> None:
@@ -47,6 +48,10 @@ def _cleanup_video(video_path: str | None, downloaded: bool, keep: bool) -> None
 
 
 def main() -> int:
+    # Start timing
+    timer = StatsTimer()
+    timer.__enter__()
+    
     ap = argparse.ArgumentParser(
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
@@ -111,6 +116,17 @@ def main() -> int:
         type=int,
         default=15,
         help="Maximum key moments to identify (default 15, used with --auto-moments).",
+    )
+    ap.add_argument(
+        "--stats",
+        action="store_true",
+        help="Include analysis stats in output (processing time, frames, tokens, etc.).",
+    )
+    ap.add_argument(
+        "--stats-format",
+        choices=["telegram", "compact"],
+        default="telegram",
+        help="Stats output format (default: telegram).",
     )
     args = ap.parse_args()
 
@@ -517,6 +533,22 @@ def main() -> int:
             print(f"3. Write moments as JSON to `{moments_json_path}`")
             print("4. Re-run watch.py --auto-moments to include results in report")
 
+    # ── Stats output ────────────────────────────────────────────────
+    if args.stats:
+        timer.__exit__(None, None, None)
+        stats = collect_stats(work)
+        stats.processing_time = timer.elapsed
+        
+        if args.stats_format == "telegram":
+            print("\n" + format_stats_telegram(stats))
+        else:
+            print("\n" + format_stats_compact(stats))
+        
+        # Save stats to file
+        stats_path = work / "stats.json"
+        stats_path.write_text(json.dumps(stats.to_dict(), indent=2))
+        print(f"_Stats saved to: `{stats_path}`_")
+    
     return 0
 
 
