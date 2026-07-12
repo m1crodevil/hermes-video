@@ -338,6 +338,11 @@ def main() -> int:
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
             "`--detail token-burner` to keep every scene-change frame across the whole video."
         )
+    if not focused and full_duration > 1200:
+        warnings.append(
+            "⚠️ Long video (>20 min): terminal output may be truncated. "
+            "Use `--output both` to ensure a JSON backup is written to the work dir."
+        )
     if not transcript_segments:
         if detail == "transcript":
             warnings.append(

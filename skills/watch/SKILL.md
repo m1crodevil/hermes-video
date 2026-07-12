@@ -151,9 +151,12 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **Transcript available** (`source: captions (json3)`, `captions (vtt)`, or `whisper (...)`) → proceed to Step 4.
 - **Transcript: none available** → captions missing AND Whisper not configured. **This is the moment to offer Whisper**, not before. Ask the user:
 
-  > "Video ini gak punya native captions. Mau setup Whisper API biar bisa transkripsi? (Groq gratis, OpenAI juga bisa) — atau lanjut frames-only aja?"
+  > "Video ini gak punya native captions. Mau transkripsi? Ada beberapa opsi:
+  > 1. **faster-whisper lokal** — gratis, jalan di VPS, support Indo ✅
+  > 2. **Groq Whisper** — bayar ~$0.04/jam (turbo), super cepat
+  > 3. **Frames-only** — visual summary aja tanpa transcript"
 
-  If they want Whisper, run `setup.py`, ask for API key, write it to `.env`, re-run watch script. If they decline, proceed frames-only.
+  If they want faster-whisper (free local), install with `pip install faster-whisper` and run directly — no API key needed. See [free-transcription-alternatives.md](references/free-transcription-alternatives.md) for code examples and model size guidance. If they want Groq Whisper, run `setup.py`, ask for API key, write it to `.env`, re-run watch script. If they decline all, proceed frames-only.
 
 **Step 4 — view frames.** The script outputs JPEG frame paths.
 
@@ -171,14 +174,23 @@ For 50+ frames, sample 8-15 representative frames evenly rather than loading all
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp
 
-### Anti-hallucination rules
+### Anti-hallucination rules (MANDATORY — read before every report)
 
+**Zero fabrication — no exceptions:**
 - Answer ONLY from what you see in frames (visual) and read in transcript (audio)
-- Do not invent details not present in frames or transcript
+- **NEVER fabricate metadata** (channel name, subscriber count, views, likes, comments, title, upload date). These MUST come from the script output or `info.json` — never from memory, guessing, or pattern-matching
 - If a frame is unclear or low quality, say "I can't see clearly in this frame"
 - Always cite timestamps: "At 2:35, the speaker says..." or "In the frame at 1:12..."
 - If transcript is in a language you don't understand, say so
 - If the video has no useful content for the question, say "The video doesn't cover this"
+- If you cannot see the script output (truncated, unclear), say so explicitly — do NOT guess
+
+**Output truncation recovery (CRITICAL):**
+The terminal tool truncates output beyond ~50K chars. For long videos (>20 min), the markdown report may be truncated. When this happens:
+1. **Check if `report.json` exists** in the work dir — read metadata from it
+2. **If no report.json**, read `<workdir>/download/video.info.json` directly for metadata
+3. **Never fill in missing data from imagination** — report what you can verify, mark the rest as "unavailable in truncated output"
+4. Prefer `--output both` for long videos to ensure a JSON backup exists
 
 ### Decision guide
 
@@ -215,6 +227,20 @@ YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitig
 
 The script auto-deletes the downloaded video after processing to prevent disk usage from ballooning (200MB–1GB per run). Use `--keep-video` to retain when needed for follow-up analysis.
 
+## Pitfalls
+
+**Long videos (>30 min) timeout on frame extraction.** Scene-aware extraction on 80+ minute videos can exceed 300s timeout even when the video downloads fine. Mitigations:
+- Use `--detail efficient` (keyframes only, near-instant) for long videos where transcript is the primary evidence
+- Use `--detail transcript` when captions exist — no video download needed
+- Use `--max-frames 50` to cap extraction even in balanced mode
+- If timeout occurs, frames already extracted before timeout are still usable — check the frames directory
+
+**No captions + no Whisper = frames-only.** For videos without native captions, the agent should offer transcription options at Step 3, not before. Options include free local (faster-whisper) and paid cloud (Groq Whisper). If user declines all transcription, frames-only is a valid fallback but severely limits analysis for dialogue-heavy content (podcasts, interviews). See [groq-whisper-limits.md](references/groq-whisper-limits.md) for Groq pricing and [free-transcription-alternatives.md](references/free-transcription-alternatives.md) for free alternatives.
+
+**Groq Whisper practical limits for long videos.** Groq has 2-hour audio/hour rate limit (ASH). Videos up to ~80 min fit in one session. For longer content, chunk the audio first. Files >25MB need either dev-tier account or URL parameter. See [groq-whisper-limits.md](references/groq-whisper-limits.md) for full limits.
+
+**Vision models misidentify channel/watermark names from frames.** When a frame contains multiple logos (channel watermark, sponsor logos, on-screen graphics), vision models often pick the wrong one or hallucinate a channel name. **Never report the channel name based solely on frame analysis.** Always cross-reference with the `channel` field from yt-dlp metadata (`--dump-json` output or the watch script's metadata). The transcript source line (`- **Source:** captions (json3)`) and the video's `info.json` are authoritative for channel identity.
+
 ## Troubleshooting
 
 | Problem | Fix | Details |
@@ -223,9 +249,10 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 | Subtitle 429 rate limit | Wait + use cookies | [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) |
 | Download throttled | Check network/proxy | [youtube-download-throttling.md](references/youtube-download-throttling.md) |
 | Wrong language subs | Auto-detect fixed in v1.2 | [language-detection-pitfall.md](references/language-detection-pitfall.md) |
-| No transcript | Offer Whisper or frames-only | See Step 3 above |
+| No transcript | Offer faster-whisper (free) or Groq Whisper or frames-only | See Step 3 + [free-transcription-alternatives.md](references/free-transcription-alternatives.md) |
 | YouTube 2026 deps missing | deno + curl_cffi required | [youtube-2026-download-requirements.md](references/youtube-2026-download-requirements.md) |
 | Setup preflight failed (exit 2) | Missing binaries — run installer | `python3 "${SKILL_DIR}/scripts/setup.py"` |
+| Frame extraction timeout (>30 min video) | Use --detail efficient or --detail transcript | See "Pitfalls" section above |
 | Whisper request failed | Check key or retry other provider | Error on stderr; try `--whisper openai` if Groq failed |
 | Download fails | Check stderr for yt-dlp error | Login-required/region-locked → tell user, don't retry |
 
@@ -245,6 +272,9 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [YouTube 2026 requirements](references/youtube-2026-download-requirements.md) — full requirements
 - [JSON3 format](references/json3-format.md) — subtitle format reference
 - [Language detection](references/language-detection-pitfall.md) — subtitle language issues
+- [Groq Whisper limits](references/groq-whisper-limits.md) — file size, rate limits, pricing, integration notes
+- [Free transcription alternatives](references/free-transcription-alternatives.md) — faster-whisper, whisper.cpp, Qwen3-ASR, Puter.js evaluation, MiMo ASR limits
+- [YouTube metadata extraction](references/youtube-metadata-extraction.md) — yt-dlp channel/video stats without API key, channel handle resolution, YouTube Data API v3 free tier
 
 ## Bundled scripts
 
