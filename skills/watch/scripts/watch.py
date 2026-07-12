@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, extract_two_pass, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -251,7 +251,19 @@ def main() -> int:
                 end_seconds=end_sec,
                 dedup=not args.no_dedup,
             )
-        else:  # balanced, token-burner
+        elif detail == "token-burner":
+            frames, frame_meta = extract_two_pass(
+                video_path,
+                work / "frames",
+                fps=fps,
+                target_frames=target,
+                resolution=args.resolution,
+                max_frames=None,  # Uncapped
+                start_seconds=start_sec,
+                end_seconds=end_sec,
+                dedup=not args.no_dedup,
+            )
+        else:  # balanced
             frames, frame_meta = extract_scene_or_uniform(
                 video_path,
                 work / "frames",

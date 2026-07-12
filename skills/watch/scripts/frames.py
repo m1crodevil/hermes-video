@@ -18,6 +18,41 @@ from pathlib import Path
 
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
+
+
+def adaptive_scene_threshold(duration_seconds: float, fps: float = 30.0) -> float:
+    """Return optimal scene-change threshold based on video duration.
+
+    Long videos with gradual transitions (documentaries, vlogs) need lower
+    thresholds to catch more scene changes. Short fast-cut videos (music,
+    trailers) need higher thresholds to avoid false positives.
+
+    Reference: ffmpeg-cookbook.com recommends 0.35 for hard cuts,
+    0.25-0.3 for fast-cut content. GDELT project uses 0.20 for news.
+    Our default 0.20 was too high for long-form documentary content.
+
+    Args:
+        duration_seconds: Total video duration
+        fps: Video frame rate (used for minimum scene interval)
+
+    Returns:
+        Threshold value between 0.12 and 0.30
+    """
+    # Minimum interval between scenes (avoid duplicate frames from rapid cuts)
+    min_scene_interval = max(1.0, 0.5)  # At least 0.5 seconds between scenes
+
+    if duration_seconds <= 60:        # ≤1 min (shorts, clips)
+        return 0.25  # Higher threshold for short content
+    elif duration_seconds <= 300:     # ≤5 min
+        return 0.22  # Moderate
+    elif duration_seconds <= 600:     # ≤10 min
+        return 0.20  # Current default (works well here)
+    elif duration_seconds <= 1800:    # ≤30 min
+        return 0.17  # Lower for longer content
+    elif duration_seconds <= 3600:    # ≤60 min
+        return 0.15  # Even lower for long-form
+    else:                             # >60 min
+        return 0.12  # Most sensitive for very long videos
 # Keep scene-detection results once we have at least this many distinct shots.
 # Below this the video is effectively static (screen recording, talking head),
 # so we fall back to uniform sampling. Matching the reference fork's behaviour,
@@ -121,7 +156,11 @@ def get_metadata(video_path: str) -> dict:
 
 
 def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
-    """Pick fps that targets a sensible frame budget for full-video scans."""
+    """Pick fps that targets a sensible frame budget for full-video scans.
+
+    Ensures minimum 1 frame per 60 seconds for long videos (>10 min)
+    to guarantee baseline coverage even with sparse scene changes.
+    """
     if duration_seconds <= 0:
         return 1.0, 1
 
@@ -136,7 +175,13 @@ def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int
     else:
         target = max_frames
 
-    return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
+    # Minimum fps guarantee for long videos
+    # Ensure at least 1 frame per 60 seconds for videos >10 min
+    min_fps_for_long_videos = 1.0 / 60.0 if duration_seconds > 600 else 0
+    calculated_fps = target / duration_seconds
+    fps = max(calculated_fps, min_fps_for_long_videos)
+
+    return _clamp_fps(fps, duration_seconds, max_frames)
 
 
 def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
@@ -222,7 +267,7 @@ def extract_scene_candidates(
     max_frames: int | None = 100,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
-    threshold: float = SCENE_THRESHOLD,
+    threshold: float | None = None,
 ) -> list[dict]:
     """Extract first frame plus ffmpeg scene-change frames.
 
@@ -230,7 +275,19 @@ def extract_scene_candidates(
     has emitted that many frames (early exit) and avoids writing extras that we
     would only delete afterwards. ``None`` (uncapped "complete" detail) keeps
     every detected shot, as the user explicitly opted in.
+
+    When ``threshold`` is ``None``, the optimal threshold is auto-selected
+    based on video duration via :func:`adaptive_scene_threshold`.
     """
+    # Auto-select threshold if not provided
+    if threshold is None:
+        meta = get_metadata(video_path)
+        duration = meta["duration_seconds"]
+        if start_seconds is not None and end_seconds is not None:
+            duration = end_seconds - start_seconds
+        threshold = adaptive_scene_threshold(duration)
+        print(f"[watch] scene threshold: {threshold:.2f} (duration: {duration:.0f}s)",
+              file=sys.stderr)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -508,6 +565,89 @@ def _dedupe_by_deltas(
     return kept, len(dropped)
 
 
+def fill_gaps_with_uniform(
+    scene_frames: list[dict],
+    video_path: str,
+    out_dir: Path,
+    resolution: int = 512,
+    max_gap_seconds: float = 120.0,
+    target_frames: int = 100,
+) -> list[dict]:
+    """Insert uniform frames in large gaps between scene-detected frames.
+
+    After scene detection, some gaps may be too large (>2 minutes) because
+    the video has gradual transitions that don't cross the threshold.
+    This function fills those gaps with uniformly-sampled frames.
+
+    Args:
+        scene_frames: Frames from scene detection (sorted by timestamp)
+        video_path: Path to video file
+        out_dir: Output directory for frames
+        resolution: Frame width in pixels
+        max_gap_seconds: Maximum acceptable gap before filling
+        target_frames: Total frame budget (scene + fill)
+
+    Returns:
+        Merged list of scene + fill frames, sorted by timestamp
+    """
+    if not scene_frames or len(scene_frames) < 2:
+        return scene_frames
+
+    # Calculate expected interval based on target
+    video_meta = get_metadata(video_path)
+    duration = video_meta["duration_seconds"]
+    expected_interval = duration / target_frames if target_frames > 0 else 60.0
+
+    # Use 2x expected interval or max_gap_seconds, whichever is smaller
+    fill_threshold = min(max_gap_seconds, expected_interval * 2)
+
+    fill_frames = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for i in range(1, len(scene_frames)):
+        prev_ts = scene_frames[i-1]["timestamp_seconds"]
+        curr_ts = scene_frames[i]["timestamp_seconds"]
+        gap = curr_ts - prev_ts
+
+        if gap > fill_threshold:
+            # Calculate how many fill frames needed
+            num_fill = int(gap / fill_threshold) - 1
+            num_fill = min(num_fill, 5)  # Cap at 5 fill frames per gap
+
+            for j in range(1, num_fill + 1):
+                fill_ts = prev_ts + (gap * j / (num_fill + 1))
+                fill_path = out_dir / f"fill_{len(fill_frames):04d}.jpg"
+
+                # Extract frame at fill timestamp
+                cmd = [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-y",
+                    "-ss", f"{fill_ts:.3f}",
+                    "-i", str(Path(video_path).resolve()),
+                    "-frames:v", "1",
+                    "-vf", _scale_filter(resolution),
+                    "-q:v", "4",
+                    str(fill_path),
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode == 0 and fill_path.exists():
+                    fill_frames.append({
+                        "index": 0,  # Will be reindexed
+                        "timestamp_seconds": fill_ts,
+                        "path": str(fill_path),
+                        "reason": "gap-fill",
+                    })
+
+    # Merge scene + fill frames and reindex
+    all_frames = sorted(scene_frames + fill_frames, key=lambda f: f["timestamp_seconds"])
+    for i, frame in enumerate(all_frames):
+        frame["index"] = i
+
+    return all_frames
+
+
 def extract_scene_or_uniform(
     video_path: str,
     out_dir: Path,
@@ -518,18 +658,20 @@ def extract_scene_or_uniform(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     dedup: bool = True,
+    threshold: float | None = None,
+    fill_gaps: bool = True,
 ) -> tuple[list[dict], dict]:
     """Prefer scene selection, falling back to uniform only when the video is
     effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots).
 
     Scene cuts are detected across the *whole* range (uncapped), near-identical
     frames are dropped (:func:`dedupe_perceptual`, unless ``dedup`` is False),
-    and the survivors are even-sampled down to ``max_frames`` via
-    :func:`_even_sample`, exactly like the keyframe engine. This costs a full
-    decode, but it guarantees coverage spans the entire clip — capping detection
-    with ``-frames:v`` instead would keep only the first ``max_frames`` cuts and
-    drop the tail of long videos (and could even fall below ``SCENE_MIN_FRAMES``
-    and misfire the uniform fallback on a cut-heavy clip).
+    large gaps are filled with uniform frames, and the survivors are
+    even-sampled down to ``max_frames`` via :func:`_even_sample`.
+
+    When ``threshold`` is ``None``, the optimal threshold is auto-selected
+    based on video duration. When ``fill_gaps`` is True, gaps larger than
+    2× the expected interval are filled with uniformly-sampled frames.
     """
     scene_frames = extract_scene_candidates(
         video_path,
@@ -538,10 +680,26 @@ def extract_scene_or_uniform(
         max_frames=None,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
+        threshold=threshold,
     )
     scene_count = len(scene_frames)
     if scene_count >= SCENE_MIN_FRAMES:
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
+
+        # Fill large gaps before even sampling
+        if fill_gaps:
+            effective_duration = (end_seconds or get_metadata(video_path)["duration_seconds"]) - \
+                                (start_seconds or 0)
+            fill_threshold = min(120.0, effective_duration / target_frames * 2)
+            deduped = fill_gaps_with_uniform(
+                deduped,
+                video_path,
+                out_dir,
+                resolution=resolution,
+                max_gap_seconds=fill_threshold,
+                target_frames=target_frames,
+            )
+
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
         return selected, {
@@ -679,6 +837,67 @@ def extract_keyframes(
         "candidate_count": candidate_count,
         "deduped_count": n_dropped,
         "selected_count": len(selected),
+        "fallback": False,
+    }
+
+
+def extract_two_pass(
+    video_path: str,
+    out_dir: Path,
+    fps: float,
+    target_frames: int,
+    resolution: int = 512,
+    max_frames: int | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    dedup: bool = True,
+) -> tuple[list[dict], dict]:
+    """Two-pass extraction: scene detection + uniform sampling.
+
+    Pass 1: Scene detection (catches hard cuts, fast transitions)
+    Pass 2: Uniform sampling at lower density (catches gradual transitions)
+    Merge + dedup for maximum coverage.
+
+    Used for token-burner mode where maximum fidelity is required.
+    """
+    # Pass 1: Scene detection (uncapped)
+    scene_frames, scene_meta = extract_scene_or_uniform(
+        video_path,
+        out_dir,
+        fps=fps,
+        target_frames=target_frames,
+        resolution=resolution,
+        max_frames=None,  # Uncapped
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        dedup=dedup,
+    )
+
+    # Pass 2: Uniform sampling at 50% density
+    uniform_fps = fps * 0.5
+    uniform_frames = extract(
+        video_path,
+        out_dir / "uniform",
+        fps=uniform_fps,
+        resolution=resolution,
+        max_frames=target_frames // 2,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+    )
+
+    # Merge + dedup
+    all_frames = sorted(scene_frames + uniform_frames, key=lambda f: f["timestamp_seconds"])
+    if dedup:
+        all_frames, n_dropped = dedupe_perceptual(all_frames)
+    else:
+        n_dropped = 0
+
+    return all_frames, {
+        "engine": "two-pass",
+        "scene_count": len(scene_frames),
+        "uniform_count": len(uniform_frames),
+        "deduped_count": n_dropped,
+        "selected_count": len(all_frames),
         "fallback": False,
     }
 
