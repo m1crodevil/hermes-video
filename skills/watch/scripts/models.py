@@ -38,6 +38,7 @@ class FrameReason(str, Enum):
     TRANSCRIPT_CUE = "transcript-cue"
     UNIFORM = "uniform"
     SELECTED = "selected"
+    GAP_FILL = "gap-fill"
 
 
 class DetailMode(str, Enum):
