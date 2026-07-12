@@ -59,12 +59,19 @@ MOMENT_DETECTION_PROMPT = """You are analyzing a video transcript to identify mo
 
 Video Title: {title}
 Uploader: {uploader}
-Duration: {duration}s
+Duration: {duration}s ({duration_fmt})
 
 Transcript (timestamped):
 {transcript}
 
-Your task: Identify up to {max_moments} key moments where visual verification would improve accuracy.
+Your task: Identify AT LEAST {min_moments} key moments where visual verification would improve accuracy.
+
+Coverage guidance:
+- For a {duration}s video, aim for approximately one moment every {interval}s
+- Spread moments evenly across the FULL duration — do not cluster in the first half
+- Include moments from the beginning, middle, AND end of the video
+- Lower-priority moments (4-5) are encouraged to ensure coverage
+- It is BETTER to include too many moments than too few
 
 Focus on moments where:
 1. **Proper nouns** — names, brands, game titles, tool names that might be misspelled in auto-captions
@@ -73,12 +80,14 @@ Focus on moments where:
 4. **Speaker identity** — moments where it's unclear who is speaking
 5. **Visual context** — moments where understanding the visual context changes interpretation
 6. **Entity validation** — game names, software names, product names that could be transcribed incorrectly
+7. **Topic transitions** — moments where the conversation shifts to a new subject
+8. **Key arguments** — important points, conclusions, or controversial statements
 
 For EACH moment, provide:
 - timestamp: MM:SS format (from the transcript timestamps)
 - word: the specific word/phrase that triggered this
 - context: 1-2 sentences around this moment
-- reason: one of [proper_noun, claim, deictic, speaker_id, visual_context, entity]
+- reason: one of [proper_noun, claim, deictic, speaker_id, visual_context, entity, topic_transition, key_argument]
 - question: specific question to ask a vision model about this frame
 - priority: 1 (critical) to 5 (nice-to-have)
 
@@ -102,23 +111,41 @@ Example:
     "question": "What prize amount or monetary figure is mentioned or shown?",
     "priority": 1
   }}
-]
-
-Be selective — only include moments where visual verification would ACTUALLY improve accuracy. Quality over quantity."""
+]"""
 
 
 def generate_prompt(
     transcript_text: str,
     video_metadata: dict,
-    max_moments: int = 15,
+    max_moments: int = 50,
+    min_moments: int | None = None,
 ) -> str:
-    """Generate LLM prompt for moment detection."""
+    """Generate LLM prompt for moment detection.
+
+    Args:
+        transcript_text: Formatted transcript with timestamps
+        video_metadata: Dict with title, uploader, duration
+        max_moments: Maximum moments to request (default 50)
+        min_moments: Minimum moments required (default: same as max_moments)
+    """
+    duration = video_metadata.get("duration", 0)
+    effective_min = min_moments or max_moments
+    interval = duration / effective_min if effective_min > 0 else 60
+
+    # Format duration as MM:SS or HH:MM:SS
+    total = int(round(duration))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    duration_fmt = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
     return MOMENT_DETECTION_PROMPT.format(
         title=video_metadata.get("title", "Unknown"),
         uploader=video_metadata.get("uploader", "Unknown"),
-        duration=video_metadata.get("duration", 0),
+        duration=duration,
+        duration_fmt=duration_fmt,
         transcript=transcript_text,
-        max_moments=max_moments,
+        min_moments=effective_min,
+        interval=f"{interval:.0f}",
     )
 
 
@@ -273,7 +300,8 @@ def main() -> int:
     prompt_cmd.add_argument("--title", type=str, default="Unknown", help="Video title")
     prompt_cmd.add_argument("--uploader", type=str, default="Unknown", help="Video uploader")
     prompt_cmd.add_argument("--duration", type=float, default=0, help="Video duration in seconds")
-    prompt_cmd.add_argument("--max-moments", type=int, default=15, help="Maximum moments to identify")
+    prompt_cmd.add_argument("--max-moments", type=int, default=50, help="Maximum moments to identify (default 50)")
+    prompt_cmd.add_argument("--min-moments", type=int, default=None, help="Minimum moments required (default: same as max)")
 
     # Parse command
     parse_cmd = sub.add_parser("parse", help="Parse LLM response into structured moments")
@@ -302,7 +330,7 @@ def main() -> int:
             "duration": args.duration,
         }
         
-        prompt = generate_prompt(transcript_text, metadata, args.max_moments)
+        prompt = generate_prompt(transcript_text, metadata, args.max_moments, args.min_moments)
         print(prompt)
         return 0
 

@@ -10,8 +10,9 @@ CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 
 DEFAULT_DETAIL = "balanced"
+DEFAULT_MIN_MOMENTS = 50
 
-DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
+DETAILS = {"transcript", "transcript-moments", "efficient", "balanced", "token-burner"}
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -47,8 +48,15 @@ def get_config() -> dict[str, object]:
     if detail not in DETAILS:
         detail = DEFAULT_DETAIL
 
+    min_moments = int(
+        os.environ.get("WATCH_MIN_MOMENTS")
+        or file_values.get("WATCH_MIN_MOMENTS")
+        or DEFAULT_MIN_MOMENTS
+    )
+
     return {
         "detail": detail,
+        "min_moments": min_moments,
         "config_file": str(CONFIG_FILE),
     }
 
@@ -62,4 +70,6 @@ def frame_cap(detail: str) -> int | None:
         return None
     if detail == "transcript":
         return None
+    if detail == "transcript-moments":
+        return None  # uncapped — driven by min_moments from LLM
     return 100
