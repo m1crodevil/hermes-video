@@ -72,8 +72,9 @@ class AnalysisStats:
 def collect_stats(work_dir: Path) -> AnalysisStats:
     """Collect statistics from work directory."""
     stats = AnalysisStats()
-    
+
     # Load report.json
+    report: dict = {}
     report_path = work_dir / "report.json"
     if report_path.exists():
         try:
@@ -120,7 +121,64 @@ def collect_stats(work_dir: Path) -> AnalysisStats:
     if moment_frames_dir.exists():
         stats.frames_extracted += len(list(moment_frames_dir.glob("*.jpg")))
     
+    # Estimate token usage
+    _estimate_tokens(stats, report)
+
     return stats
+
+
+# ── Token Estimation ──────────────────────────────────────────────────
+
+# Approximate image tokens per frame at each resolution bucket.
+# Based on vision model pricing: ~800 tokens for 512px, scaling
+# quadratically with dimension (area-based).
+_TOKENS_PER_FRAME = {
+    384: 450,
+    448: 600,
+    512: 800,
+    640: 1_250,
+    768: 1_800,
+    1024: 3_200,
+    1280: 5_000,
+    1920: 11_000,
+}
+
+# Rough character-to-token ratio (≈ 4 chars per token for mixed Latin/CJK)
+_CHARS_PER_TOKEN = 4
+
+
+def _estimate_tokens(stats: AnalysisStats, report: dict) -> None:
+    """Estimate token usage from frames + transcript."""
+    # ── Frame image tokens ────────────────────────────────────────────
+    # Pick the closest resolution bucket; default to 512.
+    res = stats.frames_resolution or 512
+    tpf = _TOKENS_PER_FRAME.get(res)
+    if tpf is None:
+        # Linear interpolation between nearest buckets
+        buckets = sorted(_TOKENS_PER_FRAME.keys())
+        lo = max((b for b in buckets if b <= res), default=buckets[0])
+        hi = min((b for b in buckets if b >= res), default=buckets[-1])
+        if lo == hi:
+            tpf = _TOKENS_PER_FRAME[lo]
+        else:
+            tpf = _TOKENS_PER_FRAME[lo] + (
+                (_TOKENS_PER_FRAME[hi] - _TOKENS_PER_FRAME[lo])
+                * (res - lo) / (hi - lo)
+            )
+    frame_tokens = int(stats.frames_extracted * tpf)
+
+    # ── Transcript text tokens ────────────────────────────────────────
+    transcript_segments = report.get("transcript_segments", [])
+    transcript_chars = sum(len(s.get("text", "")) for s in transcript_segments)
+    transcript_tokens = transcript_chars // _CHARS_PER_TOKEN
+
+    # ── Vision verification tokens (each call ≈ 800 image + 200 prompt) ──
+    vision_tokens = stats.vision_verifications * 1_000
+
+    # ── Totals ────────────────────────────────────────────────────────
+    stats.input_tokens = frame_tokens + transcript_tokens + vision_tokens
+    stats.output_tokens = 0  # agent output is external to the script
+    stats.total_tokens = stats.input_tokens + stats.output_tokens
 
 
 def _extract_from_report(stats: AnalysisStats, report: dict) -> None:
