@@ -288,6 +288,7 @@ Views: [N] · Likes: [N] · Comments: [N]
 📝 Transcript: [N] segments [source]
 🎯 Key Moments: [N] detected ([N] critical)
 🔍 Vision Verifications: [N] completed ([N] corrections)
+🪙 Tokens: [N] (in: [N], out: [N])
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 _Work dir: `[path]` — frames + transcript retained._
@@ -496,6 +497,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --stats
 📝 Transcript: 385 segments [captions (json3)]
 🎯 Key Moments: 13 detected (8 critical)
 🔍 Vision Verifications: 2 completed (1 corrections)
+🪙 Tokens: 81,946 (in: 81,946, out: 0)
 ━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -512,7 +514,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --stats
 - Transcript segments (with language and source)
 - Key moments detected (with priority count)
 - Vision verifications (with corrections count)
-- Token usage (if available)
+- Token usage (estimated from frames + transcript)
 
 *** Pitfall: ASR Confidence Scores Not Always Available
 
