@@ -58,10 +58,8 @@ class AnalysisStats:
     vision_verifications: int = 0
     vision_corrections: int = 0
     
-    # Token Usage (if available)
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
+    # Token Usage (estimated from frames + transcript)
+    tokens: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -176,9 +174,7 @@ def _estimate_tokens(stats: AnalysisStats, report: dict) -> None:
     vision_tokens = stats.vision_verifications * 1_000
 
     # ── Totals ────────────────────────────────────────────────────────
-    stats.input_tokens = frame_tokens + transcript_tokens + vision_tokens
-    stats.output_tokens = 0  # agent output is external to the script
-    stats.total_tokens = stats.input_tokens + stats.output_tokens
+    stats.tokens = frame_tokens + transcript_tokens + vision_tokens
 
 
 def _extract_from_report(stats: AnalysisStats, report: dict) -> None:
@@ -271,8 +267,8 @@ def format_stats_telegram(stats: AnalysisStats) -> str:
         lines.append(f"🔍 Vision Verifications: {stats.vision_verifications} completed{corrections}")
     
     # Token Usage
-    if stats.total_tokens > 0:
-        lines.append(f"🪙 Tokens: {stats.total_tokens:,} (in: {stats.input_tokens:,}, out: {stats.output_tokens:,})")
+    if stats.tokens > 0:
+        lines.append(f"🪙 Tokens: {stats.tokens:,} (estimated)")
     
     # Footer
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
