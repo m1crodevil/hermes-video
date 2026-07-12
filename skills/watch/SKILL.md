@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.10.0"
+version: "1.11.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -97,7 +97,10 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 -- [ ] Step 0: Setup preflight (`setup.py --json`)
 - [ ] Step 1: Parse source + question from user input
 - [ ] Step 2: Run `watch.py "<source>"` with appropriate flags
-- [ ] Step 2b: Collect metadata + stats from work dir (**MANDATORY — always, even on timeout**)
+  - Short video (<10 min) / transcript mode → **foreground** `terminal(timeout=300)`
+  - Long video (>10 min) / balanced mode → **background** `terminal(background=True, notify_on_complete=True)`
+- [ ] Step 2b: Wait for completion (**background mode only** — `process(action='wait')`)
+- [ ] Step 2c: Collect metadata + stats from work dir (**MANDATORY — always, even on timeout**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
 - [ ] Step 4: `vision_analyze` 8-15 representative frames
 - [ ] Step 5: Answer user (specific question OR summarize)
@@ -107,13 +110,34 @@ Auto-installs ffmpeg, yt-dlp, and scaffold `~/.config/watch/.env`. YouTube 2026 
 
 **Step 1 — parse the user input.** Separate the video source (URL or path) from any question the user asked. Example: `/watch https://youtu.be/abc what language is this in?` → source = `https://youtu.be/abc`, question = `what language is this in?`.
 
-**Step 2 — run the watch script.** Pass the source verbatim. Do not shell-escape it yourself beyond normal quoting:
+**Step 2 — run the watch script.** Pass the source verbatim. Do not shell-escape it yourself beyond normal quoting.
 
-```bash
-python3 "${SKILL_DIR}/scripts/watch.py" "<source>"
+**CRITICAL: Use background mode for long videos to avoid terminal timeout.** The `terminal()` tool has a default timeout of 180s (max foreground: 600s). Scene detection on videos >10 min can exceed this. Always use `background=true` + `notify_on_complete=true` for videos where detail is NOT `transcript`:
+
+```
+# Long videos (>10 min) or balanced/token-burner detail — ALWAYS background:
+terminal(
+  command='python3 "${SKILL_DIR}/scripts/watch.py" "<source>" --stats',
+  background=True,
+  notify_on_complete=True
+)
 ```
 
-**Step 2b — collect metadata + stats from work dir (MANDATORY).** Always run this step — even when the script times out or crashes. The work dir already contains everything needed.
+For short videos (<10 min) or `--detail transcript` (no video download), foreground is fine:
+
+```bash
+python3 "${SKILL_DIR}/scripts/watch.py" "<source>" --stats
+```
+
+**Step 2b — wait for completion (background mode only).** When Step 2 used `background=true`:
+
+1. `process(action='wait', session_id=<from Step 2>, timeout=900)` — blocks until done OR 15-min timeout
+2. `process(action='log', session_id=<from Step 2>)` — get stdout/stderr output
+3. Parse work dir path from output: `[watch] working dir: /tmp/watch-XXXX`
+4. If the process exited with code 0 → `report.json` exists → proceed to Step 2c primary path
+5. If non-zero exit or timeout → `report.json` missing → proceed to Step 2c fallback path
+
+**Step 2c — collect metadata + stats from work dir (MANDATORY).** Always run this step — even when the script times out or crashes. The work dir already contains everything needed.
 
 **Primary path (report.json exists):**
 ```bash
@@ -304,7 +328,7 @@ _Work dir: `[path]` — frames + transcript retained._
 - **NEVER** use raw markdown table syntax (`| col | col |`) in Telegram output — it doesn't render properly
 - Always include stats block — compile manually if `report.json` is missing
 
-**Stats collection (MANDATORY):** Always run **Step 2b** (primary or fallback path) to collect stats. The fallback one-liner reads from raw files when `report.json` is missing. Processing time: use the time from the script output, or estimate from terminal timeout. Never omit the stats block.
+**Stats collection (MANDATORY):** Always run **Step 2c** (primary or fallback path) to collect stats. The fallback one-liner reads from raw files when `report.json` is missing. Processing time: use the time from the script output, or estimate from terminal timeout. Never omit the stats block.
 
 **Step 6 — follow-ups.** The downloaded video is auto-deleted. Frames and transcript remain in the working directory. Answer follow-ups from what you already have — do NOT re-run the script. If no follow-ups expected, clean up with `rm -rf <dir>`.
 
@@ -542,12 +566,13 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 ## Pitfalls
 
-**Long videos (>30 min) timeout on frame extraction.** Scene-aware extraction on 80+ minute videos can exceed 300s timeout even when the video downloads fine. **This is expected behavior — do NOT treat it as a failure.** Frames extracted before timeout are still usable. **Design principle: let the agent handle post-hoc collection rather than over-engineering Python timeout/retry logic.** The agent can read raw files from the work dir at any time — `video.info.json`, `frames/*.jpg`, `.json3` subtitles — regardless of whether the script completed. Adding complex fallback paths in Python (partial writes, timeout-aware retries, signal handlers) is almost always the wrong tradeoff vs. a simple fallback one-liner in the skill. Mitigations:
+**Long videos (>30 min) timeout on frame extraction.** Scene-aware extraction on 80+ minute videos can exceed 300s timeout even when the video downloads fine. **Primary fix: always use `background=true` + `notify_on_complete=true` for videos >10 min** (see Step 2). This avoids terminal timeout entirely — the process runs to completion in the background. If foreground mode was used and timeout occurs, frames already extracted before timeout are still usable. **Design principle: let the agent handle post-hoc collection rather than over-engineering Python timeout/retry logic.** The agent can read raw files from the work dir at any time — `video.info.json`, `frames/*.jpg`, `.json3` subtitles — regardless of whether the script completed. Mitigations:
+- Use `background=true` for videos >10 min (see Step 2) — **primary fix**
 - Use `--detail efficient` (keyframes only, near-instant) for long videos where transcript is the primary evidence
 - Use `--detail transcript` when captions exist — no video download needed
 - Use `--max-frames 50` to cap extraction even in balanced mode
 - If timeout occurs, frames already extracted before timeout are still usable — check the frames directory
-- **When timeout happens, `report.json` will NOT exist.** Run Step 2b fallback path to collect metadata + stats from raw files (`video.info.json`, `frames/`, subtitle `.json3`). Stats are MANDATORY in every deliverable — never omit the stats block.
+- **When timeout happens, `report.json` will NOT exist.** Run Step 2c fallback path to collect metadata + stats from raw files (`video.info.json`, `frames/`, subtitle `.json3`). Stats are MANDATORY in every deliverable — never omit the stats block.
 
 **No captions + no Whisper = frames-only.** For videos without native captions, the agent should offer transcription options at Step 3, not before. Options include free local (faster-whisper) and paid cloud (Groq Whisper). If user declines all transcription, frames-only is a valid fallback but severely limits analysis for dialogue-heavy content (podcasts, interviews). See [groq-whisper-limits.md](references/groq-whisper-limits.md) for Groq pricing and [free-transcription-alternatives.md](references/free-transcription-alternatives.md) for free alternatives.
 
@@ -578,7 +603,7 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 | No transcript | Offer faster-whisper (free) or Groq Whisper or frames-only | See Step 3 + [free-transcription-alternatives.md](references/free-transcription-alternatives.md) |
 | YouTube 2026 deps missing | deno + curl_cffi required | [youtube-2026-download-requirements.md](references/youtube-2026-download-requirements.md) |
 | Setup preflight failed (exit 2) | Missing binaries — run installer | `python3 "${SKILL_DIR}/scripts/setup.py"` |
-| Frame extraction timeout (>30 min video) | Use --detail efficient or --detail transcript | See "Pitfalls" section above |
+| Frame extraction timeout (>30 min video) | Use `background=true` (Step 2) or `--detail efficient` | See "Pitfalls" section — background mode is primary fix |
 | Whisper request failed | Check key or retry other provider | Error on stderr; try `--whisper openai` if Groq failed |
 | Download fails | Check stderr for yt-dlp error | Login-required/region-locked → tell user, don't retry |
 
