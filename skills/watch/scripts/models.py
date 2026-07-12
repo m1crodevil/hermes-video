@@ -49,6 +49,44 @@ class DetailMode(str, Enum):
     TOKEN_BURNER = "token-burner"
 
 
+class MomentReason(str, Enum):
+    """Why a moment needs visual verification."""
+    PROPER_NOUN = "proper_noun"
+    CLAIM = "claim"
+    DEICTIC = "deictic"
+    SPEAKER_ID = "speaker_id"
+    VISUAL_CONTEXT = "visual_context"
+    ENTITY = "entity"
+    UNKNOWN = "unknown"
+
+
+class KeyMoment(BaseModel):
+    """A moment in the transcript that needs visual verification."""
+    model_config = ConfigDict(use_enum_values=True)
+
+    timestamp: float          # seconds from video start
+    timestamp_fmt: str        # "MM:SS" format
+    word: str                 # triggering word/phrase
+    context: str              # surrounding text (for LLM context)
+    reason: MomentReason      # why this needs verification
+    question: str             # what to ask vision model
+    priority: int             # 1=critical, 5=nice-to-have
+    vision_result: str | None = None  # result from vision analysis
+    correction: str | None = None     # corrected text if any
+
+    @computed_field
+    @property
+    def timestamp_seconds(self) -> float:
+        return self.timestamp
+
+
+class KeyMomentStats(BaseModel):
+    """Statistics about key moment detection."""
+    total: int
+    by_reason: dict[str, int] = {}
+    by_priority: dict[int, int] = {}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _fmt_time(seconds: float) -> str:
@@ -238,6 +276,10 @@ class WatchReport(BaseModel):
     transcript_segments: list[TranscriptSegment] = []
     transcript_text: str | None = None  # pre-formatted string
 
+    # Key Moments (from LLM-driven analysis)
+    key_moments: list[KeyMoment] = []
+    key_moment_stats: KeyMomentStats | None = None
+
     # Warnings
     warnings: list[str] = []
 
@@ -344,7 +386,6 @@ class WatchReport(BaseModel):
             lines.append(f"- **Source:** {self.transcript_source}")
             lines.append(f"- **Segments:** {len(self.transcript_segments)}")
             lines.append("")
-
             if compact:
                 lines.append("_Full transcript available in `report.json`._")
                 lines.append("")
@@ -354,6 +395,7 @@ class WatchReport(BaseModel):
                 lines.append("```")
                 lines.append(self.transcript_text)
                 lines.append("```")
+                lines.append("")
             elif self.transcript_segments:
                 lines.append("### Full Transcript")
                 lines.append("")
@@ -362,11 +404,28 @@ class WatchReport(BaseModel):
                     stamp = seg.start_fmt
                     lines.append(f"[{stamp}] {seg.text}")
                 lines.append("```")
-            lines.append("")
+                lines.append("")
         else:
             lines.append("## 📝 Transcript")
             lines.append("")
             lines.append("_No transcript available._")
+            lines.append("")
+
+        # Key Moments section
+        if self.key_moments:
+            lines.append("## 🎯 Key Moments")
+            lines.append("")
+            lines.append(f"- **Total:** {len(self.key_moments)} moments identified")
+            if self.key_moment_stats:
+                stats = self.key_moment_stats
+                if stats.by_reason:
+                    reason_str = ", ".join(f"{k}: {v}" for k, v in stats.by_reason.items())
+                    lines.append(f"- **By reason:** {reason_str}")
+            lines.append("")
+            lines.append("| # | Timestamp | Word | Reason | Priority | Question |")
+            lines.append("|---|-----------|------|--------|----------|----------|")
+            for i, m in enumerate(self.key_moments, 1):
+                lines.append(f"| {i} | {m.timestamp_fmt} | {m.word} | {m.reason} | {m.priority} | {m.question[:50]}... |")
             lines.append("")
 
         # Warnings
@@ -415,6 +474,8 @@ def build_report(
     transcript_source: str = "none",
     transcript_segments: list[dict] | None = None,
     transcript_text: str | None = None,
+    key_moments: list[dict] | None = None,
+    key_moment_stats: dict | None = None,
     warnings: list[str] | None = None,
 ) -> WatchReport:
     """Build a WatchReport from raw pipeline data dicts.
@@ -488,6 +549,49 @@ def build_report(
                 words=words,
             ))
 
+    # Build key moment models
+    key_moment_models = []
+    if key_moments:
+        for m in key_moments:
+            # Handle timestamp as string (MM:SS) or float (seconds)
+            ts_raw = m.get("timestamp", "0:00")
+            if isinstance(ts_raw, str):
+                # Parse MM:SS or HH:MM:SS format
+                parts = ts_raw.strip().split(":")
+                if len(parts) == 2:
+                    ts_seconds = int(parts[0]) * 60 + float(parts[1])
+                elif len(parts) == 3:
+                    ts_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                else:
+                    ts_seconds = float(parts[0])
+                ts_fmt = ts_raw
+            else:
+                ts_seconds = float(ts_raw)
+                # Format as MM:SS
+                mins = int(ts_seconds // 60)
+                secs = int(ts_seconds % 60)
+                ts_fmt = f"{mins}:{secs:02d}"
+
+            key_moment_models.append(KeyMoment(
+                timestamp=ts_seconds,
+                timestamp_fmt=ts_fmt,
+                word=m.get("word", ""),
+                context=m.get("context", ""),
+                reason=m.get("reason", "unknown"),
+                question=m.get("question", ""),
+                priority=m.get("priority", 3),
+                vision_result=m.get("vision_result"),
+                correction=m.get("correction"),
+            ))
+
+    key_stats = None
+    if key_moment_stats:
+        key_stats = KeyMomentStats(
+            total=key_moment_stats.get("total", 0),
+            by_reason=key_moment_stats.get("by_reason", {}),
+            by_priority=key_moment_stats.get("by_priority", {}),
+        )
+
     return WatchReport(
         metadata=meta,
         detail=detail,
@@ -497,5 +601,7 @@ def build_report(
         transcript_source=transcript_source,
         transcript_segments=segments,
         transcript_text=transcript_text,
+        key_moments=key_moment_models,
+        key_moment_stats=key_stats,
         warnings=warnings or [],
     )

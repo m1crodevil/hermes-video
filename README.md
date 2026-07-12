@@ -31,6 +31,8 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 
 **Turn a playlist into notes.** `/watch https://youtu.be/<video> summarize this to a note` Run it across a series and file a per-video summary, so a channel or course becomes a searchable set of notes instead of hours you have to sit through.
 
+**Verify transcript accuracy with visual evidence.** `/watch https://youtu.be/<video> --auto-moments` Automatically identifies moments in the transcript that need visual verification (proper nouns, game names, claims, deictic references), extracts frames at those timestamps, and validates the transcript against what's actually shown on screen.
+
 ---
 
 ## How It Works
@@ -40,8 +42,10 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Hermes Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip and ship it to Whisper -- Groq's `whisper-large-v3` (preferred) or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Hermes.** The script builds a validated Pydantic `WatchReport` model from all pipeline data -- metadata, frames with timestamps and reasons, transcript segments with word-level timing.
-6. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript.
-7. **Cleanup.** The downloaded video file is deleted automatically after frame extraction to save disk space (200MB--1GB per run). Pass `--keep-video` to retain it.
+6. **Optional: LLM-driven moment detection.** With `--auto-moments`, the transcript is analyzed to identify moments needing visual verification -- proper nouns, claims, deictic references, speaker identity clues. Frames are extracted at those exact timestamps.
+7. **Optional: Batch vision verification.** The agent analyzes key frames with specific questions (not generic "what is shown?"), corrects misspelled names, validates claims, and identifies speakers from visual cues.
+8. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It verified the facts.
+9. **Cleanup.** The downloaded video file is deleted automatically after frame extraction to save disk space (200MB--1GB per run). Pass `--keep-video` to retain it.
 
 ---
 
@@ -79,7 +83,7 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 ```
 
 **Other options:**
-
+**Other options:**
 | Flag | Description |
 |------|-------------|
 | `--timestamps T1,T2,...` | Grab frames at specific timestamps |
@@ -92,6 +96,8 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 | `--no-dedup` | Keep near-duplicate frames |
 | `--keep-video` | Retain downloaded video |
 | `--out-dir DIR` | Custom working directory |
+| `--auto-moments` | LLM-driven moment detection for visual verification |
+| `--max-moments N` | Max key moments to identify (default 15) |
 
 ---
 
@@ -156,9 +162,9 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 Every run produces a validated Pydantic `WatchReport` model. Two output modes:
 
 **Markdown** (default) -- structured report with metadata table, frame timeline, and timestamped transcript. Human-readable, renders well in Telegram/Slack.
-
+Every run produces a validated Pydantic `WatchReport` model. Two output modes:
+**Markdown** (default) -- structured report with metadata table, frame timeline, and timestamped transcript. Human-readable, renders well in Telegram/Slack.
 **JSON** (`--output json` or `--output both`) -- machine-readable, ready for downstream pipelines.
-
 ```json
 {
   "metadata": {
@@ -185,10 +191,23 @@ Every run produces a validated Pydantic `WatchReport` model. Two output modes:
         {"word": "spoken", "start": 10.0, "confidence": 0.95}
       ]
     }
+  ],
+  "key_moments": [
+    {
+      "timestamp": 54.0,
+      "timestamp_fmt": "0:54",
+      "word": "Raknarok",
+      "context": "Ya kan Ragnarok. Tahu Raknarok?",
+      "reason": "proper_noun",
+      "question": "What game name is displayed on screen?",
+      "priority": 1,
+      "vision_result": "Ragnarok Online",
+      "correction": "Ragnarok"
+    }
   ]
 }
 ```
-
+Models: `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegment`, `WordTiming`, `FocusRange`, `KeyMoment`, `KeyMomentStats`, `MomentReason` -- defined in `scripts/models.py`.
 Models: `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegment`, `WordTiming`, `FocusRange` -- defined in `scripts/models.py`.
 
 ---
@@ -212,6 +231,12 @@ Models: `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegmen
 │       ├── language.py           # subtitle language detection
 │       ├── config.py             # shared config
 │       └── setup.py              # preflight + installer
+│       ├── transcript_moments.py # LLM-driven moment detection
+│       ├── extract_moment_frames.py # Auto-extract frames at timestamps
+│       ├── batch_vision.py       # Batch vision analysis
+│       ├── apply_corrections.py  # Auto-apply transcript corrections
+│       ├── vision_verify.py      # Vision verification workflow
+│       └── synthesis.py          # Grounded synthesis prompts
 ├── tests/
 │   └── test_models.py            # 30 unit tests
 ├── install.sh                    # install script

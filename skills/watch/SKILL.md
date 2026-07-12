@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.8.0"
+version: "1.9.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -146,6 +146,8 @@ Optional flags:
 - `--no-whisper` — disable Whisper fallback entirely
 - `--no-dedup` — keep near-duplicate frames (usually dropped to save budget)
 - `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
+- `--auto-moments` — generate LLM prompt for key moment detection from transcript (see "LLM-Driven Moment Detection" below)
+- `--max-moments N` — maximum key moments to identify (default 15, used with `--auto-moments`)
 
 ### Focusing on a section (higher frame rate)
 
@@ -311,6 +313,127 @@ Visual frame selection can miss moments a presenter explicitly flags ("look here
 
 Behavior: additive by default; cue frames are pinned and counted first; honors focus mode; `--detail transcript --timestamps …` returns *only* cue frames.
 
+## Transcript-Frame Alignment (CRITICAL)
+
+**The gap:** watch.py extracts frames (scene-based) and transcripts (JSON3/VTT) as *separate streams*. The LLM receives both but must manually cross-reference timestamps. This leads to interpretation errors — e.g., misidentifying who recruited whom because the transcript alone doesn't show who is speaking.
+
+**The bridge:** JSON3 transcripts contain **word-level timing** (`tOffsetMs` per word). Use this to identify *which moments* need visual verification, then extract frames at those exact timestamps.
+
+### Workflow: LLM-Driven Moment Detection
+
+After running watch.py and reading the transcript:
+
+1. **Read the full transcript** from `report.json` → `transcript_segments`
+2. **Identify key moments** that need visual verification:
+   - Proper nouns (names, game/tool/brand names) — auto-captions often misspell these
+   - Deictic references ("ini", "itu", "lihat", "this", "that", "look") — speaker points at something
+   - Claims/statistics — numbers, prices, dates that need fact-checking
+   - Speaker identity clues — moments where it's unclear who is speaking
+3. **Extract frames at those timestamps** using `--timestamps` flag (second run on local file)
+4. **Vision-analyze** each frame with a *specific question* (not generic "what is shown?")
+
+### Example: Detecting Proper Nouns
+
+```
+Transcript: "Ya kan Ragnarok. Tahu Raknarok? Raknarok tahu tahu."
+                         ^^^^^^^^
+                         ASR mangled the name
+
+→ Extract frame @ 0:54
+→ Vision: "What game name is displayed on screen?"
+→ Answer: "Ragnarok Online" (corrected from "Raknarok")
+```
+
+### Automated: `--auto-moments` Flag
+
+Instead of manually identifying key moments, use `--auto-moments` to generate an LLM prompt for automated detection:
+
+```bash
+# Step 1: Run watch.py with --auto-moments
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail transcript --auto-moments
+
+# Step 2: Read the generated prompt
+cat <workdir>/moments_prompt.txt
+
+# Step 3: Process prompt (as LLM) and write key_moments.json
+# The LLM analyzes the transcript and identifies moments needing verification
+
+# Step 4: Re-run to include moments in report
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail transcript --auto-moments
+```
+
+**Output:** `report.json` includes `key_moments` array with:
+- `timestamp` — seconds from start
+- `timestamp_fmt` — "MM:SS" format
+- `word` — triggering word/phrase
+- `context` — surrounding text
+- `reason` — proper_noun, claim, deictic, speaker_id, visual_context, entity
+- `question` — specific vision question
+- `priority` — 1 (critical) to 5 (nice-to-have)
+
+**Zero hardcoding:** All detection is LLM-driven. Works across languages and content types.
+
+### Complete LLM-Driven Workflow
+
+The full workflow for transcript-frame alignment:
+
+```bash
+# Step 1: Run watch.py with --auto-moments
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments
+
+# Step 2: LLM processes moments_prompt.txt → writes key_moments.json
+
+# Step 3: Re-run to load moments into report
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments
+
+# Step 4: Extract frames at moment timestamps
+python3 "${SKILL_DIR}/scripts/extract_moment_frames.py" \
+  --video <workdir>/download/video.mp4 \
+  --moments <workdir>/key_moments.json \
+  --out-dir <workdir>/moment_frames \
+  --update
+
+# Step 5: Generate batch vision prompt
+python3 "${SKILL_DIR}/scripts/batch_vision.py" prompt \
+  --moments <workdir>/key_moments.json > <workdir>/vision_prompt.txt
+
+# Step 6: LLM processes vision prompt → writes vision_results.json
+
+# Step 7: Apply corrections to transcript
+python3 "${SKILL_DIR}/scripts/apply_corrections.py" \
+  --transcript <workdir>/report.json \
+  --moments <workdir>/key_moments.json \
+  --output <workdir>/corrected_transcript.json \
+  --diff
+```
+
+### Script Reference
+
+| Script | Purpose | Input | Output |
+|--------|---------|-------|--------|
+| `transcript_moments.py` | Generate LLM prompt for moment detection | Transcript | moments_prompt.txt |
+| `extract_moment_frames.py` | Extract frames at moment timestamps | Video + moments | Frame files |
+| `batch_vision.py` | Generate batch vision prompt | Moments with frames | vision_prompt.txt |
+| `apply_corrections.py` | Apply corrections to transcript | Transcript + moments | Corrected transcript |
+| `vision_verify.py` | Vision verification workflow | Moments + frames | Verified moments |
+| `synthesis.py` | Grounded synthesis prompt | Transcript + verified | synthesis_prompt.txt |
+
+*** Pitfall: ASR Confidence Scores Not Always Available
+
+YouTube auto-captions for some languages (e.g., Indonesian) return `acAsrConf: 0` for ALL words — confidence scores are absent. Do NOT rely on confidence-based filtering. Instead, use:
+- Capitalization patterns (proper nouns start with uppercase)
+- Context clues (game names, tool names, people names)
+- LLM judgment (let the model decide what needs verification)
+
+### Pitfall: Transcript Alone Cannot Identify Speakers
+
+Without visual context, transcript text is ambiguous about *who* is speaking. Two people discussing "I recruited him" looks identical in text. Always cross-reference with:
+- Discord/game UI (shows participant names)
+- Streamer facecam (shows who is live)
+- Channel metadata (who is the uploader vs guest)
+
+See [json3-transcript-frame-alignment.md](references/json3-transcript-frame-alignment.md) for the full JSON3 data structure and alignment strategy.
+
 ## Cookies & Rate Limiting
 
 YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download, browser cookies (`--cookies-from-browser chrome` auto-detected), and sleep intervals (`--sleep-subtitles 3`). For best reliability, log in to YouTube in Chrome. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
@@ -331,7 +454,15 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 **Groq Whisper practical limits for long videos.** Groq has 2-hour audio/hour rate limit (ASH). Videos up to ~80 min fit in one session. For longer content, chunk the audio first. Files >25MB need either dev-tier account or URL parameter. See [groq-whisper-limits.md](references/groq-whisper-limits.md) for full limits.
 
+**FrameReason enum mismatch causes PydanticValidationError (fixed v1.8.1).** `frames.py` can emit `reason="gap-fill"` for gap-filled frames, but the `FrameReason` enum in `models.py` must include every value. If you see `ValidationError: Input should be 'scene-change', 'keyframe', ... or 'selected' [type=enum, input_value='gap-fill']`, add the missing value to the `FrameReason` enum in `scripts/models.py` and commit to the hermes-video repo.
+
 **Vision models misidentify channel/watermark names from frames.** When a frame contains multiple logos (channel watermark, sponsor logos, on-screen graphics), vision models often pick the wrong one or hallucinate a channel name. **Never report the channel name based solely on frame analysis.** Always cross-reference with the `channel` field from yt-dlp metadata (`--dump-json` output or the watch script's metadata). The transcript source line (`- **Source:** captions (json3)`) and the video's `info.json` are authoritative for channel identity.
+
+**Transcript misreads platform/tool names.** Auto-captions (especially in Indonesian) can mangle product names — e.g., "NoteGPT" transcribed as "notde GPT" which gets misinterpreted as "ChatGPT 3.1". When summarizing, cross-reference any platform/tool/model names against the video's visual frames or web search before reporting them as fact. Don't trust transcript phonetics for proper nouns.
+
+**Transcript and frames are not connected by default.** watch.py outputs transcript and frames as separate streams. The LLM must manually cross-reference timestamps. This causes interpretation errors — e.g., misidentifying who is speaking because the transcript doesn't label speakers. Mitigation: use `--timestamps` to extract frames at key transcript moments, then vision-analyze with specific questions. See "Transcript-Frame Alignment" section above.
+
+**Multi-speaker videos require visual context for speaker identification.** Auto-captions do not label who is speaking. In Discord calls, podcasts, or interviews, the transcript alone cannot distinguish speakers. Always check frames for Discord UI (participant names), streamer facecam, or game UI (player names) to attribute quotes correctly.
 
 ## Troubleshooting
 
@@ -369,6 +500,8 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [YouTube metadata extraction](references/youtube-metadata-extraction.md) — yt-dlp channel/video stats without API key, channel handle resolution, YouTube Data API v3 free tier
 - [Truncation-fabrication incident](references/truncation-fabrication-incident.md) — case study: terminal output truncation led to fabricated metadata, fixes applied
 - [Scene detection optimization](references/scene-detection-optimization.md) — adaptive thresholds, hybrid approaches, gap-filling for long videos
+- [Transcript proofreading tools](references/transcript-proofreading-tools.md) — landscape of subtitle correction tools (Whisply, skill-caption-clip, DIY LLM approaches)
+- [JSON3 transcript-frame alignment](references/json3-transcript-frame-alignment.md) — word-level timing, LLM-driven moment detection, cross-referencing transcript with visual evidence
 
 ## Bundled scripts
 
