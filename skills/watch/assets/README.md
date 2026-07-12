@@ -20,6 +20,7 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 - 🎯 **Adaptive thresholds** — scene detection auto-tunes based on video duration
 - 📏 **Gap-filling** — uniform frames inserted in large gaps for consistent coverage
 - ✅ **Minimum density guarantee** — at least 1 frame per 60s for videos >10 min
+- 📊 **Mandatory stats** — stats always included in deliverable, even on timeout (agent-collected from raw files)
 
 ## 📦 Prerequisites
 
@@ -195,6 +196,15 @@ Captions missing AND no Whisper key. Options:
 1. Set up a Groq/OpenAI API key in `~/.config/watch/.env`
 2. Run with `--detail balanced` for frames-only analysis
 3. Run with `--no-whisper` to skip transcription entirely
+### Frame extraction times out on long videos (>30 min)
+
+Scene-aware extraction can exceed the 300s terminal timeout on 60+ minute videos. **This is expected** — frames extracted before timeout are still usable. The agent will:
+1. Collect metadata from `video.info.json` (always available)
+2. Count frames from `frames/` directory
+3. Read transcript segments from `.json3` subtitle files
+4. Include stats in the deliverable automatically
+
+For faster extraction on long videos, use `--detail efficient` (keyframes only) or `--detail transcript` (transcript only, no video download).
 
 ## 📁 Directory Structure
 
