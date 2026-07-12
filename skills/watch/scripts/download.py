@@ -293,6 +293,20 @@ def _read_info(info_path: Path, url: str) -> dict:
                 "language": raw.get("language", "en"),
                 "description": (raw.get("description") or "")[:500],
                 "url": raw.get("webpage_url") or url,
+                # Channel stats
+                "channel_id": raw.get("channel_id"),
+                "channel_url": raw.get("channel_url"),
+                "channel_follower_count": raw.get("channel_follower_count"),
+                "channel_is_verified": raw.get("channel_is_verified", False),
+                "uploader_id": raw.get("uploader_id"),
+                "uploader_url": raw.get("uploader_url"),
+                # Video stats
+                "view_count": raw.get("view_count"),
+                "like_count": raw.get("like_count"),
+                "comment_count": raw.get("comment_count"),
+                "upload_date": raw.get("upload_date"),
+                "tags": raw.get("tags") or [],
+                "categories": raw.get("categories") or [],
             }
         except Exception as exc:
             print(f"[watch] info.json parse failed: {exc}", file=sys.stderr)

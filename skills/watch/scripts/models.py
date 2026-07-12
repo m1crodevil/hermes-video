@@ -66,6 +66,16 @@ def _fmt_duration(seconds: float) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+def _fmt_count(n: int | float | None) -> str:
+    """Format a number as human-readable (e.g. 8494167 → 8.4M)."""
+    if n is None:
+        return "—"
+    n = int(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
 
 
 # ── Core Models ──────────────────────────────────────────────────────────
@@ -147,6 +157,21 @@ class VideoMetadata(BaseModel):
     codec: str | None = None
     has_audio: bool = True
     detected_language: str | None = None
+    # Channel stats (from yt-dlp, YouTube only)
+    channel_id: str | None = None
+    channel_url: str | None = None
+    channel_follower_count: int | None = None
+    channel_is_verified: bool = False
+    uploader_id: str | None = None
+    uploader_url: str | None = None
+
+    # Video stats (from yt-dlp, YouTube only)
+    view_count: int | None = None
+    like_count: int | None = None
+    comment_count: int | None = None
+    upload_date: str | None = None
+    tags: list[str] = []
+    categories: list[str] = []
 
     @computed_field
     @property
@@ -252,6 +277,20 @@ class WatchReport(BaseModel):
             ("Uploader", meta.uploader or "—"),
             ("Duration", f"{meta.duration_fmt} ({meta.duration:.1f}s)"),
         ]
+        # Channel stats (YouTube)
+        if meta.channel_follower_count is not None:
+            verified = " ✓" if meta.channel_is_verified else ""
+            meta_rows.append(("Channel", f"{meta.uploader or '—'}{verified}"))
+            meta_rows.append(("Subscribers", _fmt_count(meta.channel_follower_count)))
+        if meta.view_count is not None:
+            meta_rows.append(("Views", _fmt_count(meta.view_count)))
+        if meta.like_count is not None:
+            meta_rows.append(("Likes", _fmt_count(meta.like_count)))
+        if meta.comment_count is not None:
+            meta_rows.append(("Comments", _fmt_count(meta.comment_count)))
+        if meta.upload_date:
+            formatted_date = f"{meta.upload_date[:4]}-{meta.upload_date[4:6]}-{meta.upload_date[6:]}"
+            meta_rows.append(("Published", formatted_date))
         if meta.resolution:
             meta_rows.append(("Resolution", f"{meta.resolution} ({meta.codec or 'unknown'})"))
         if meta.detected_language:
@@ -346,6 +385,20 @@ def build_report(
     codec: str | None = None,
     has_audio: bool = True,
     detected_language: str | None = None,
+    # Channel stats
+    channel_id: str | None = None,
+    channel_url: str | None = None,
+    channel_follower_count: int | None = None,
+    channel_is_verified: bool = False,
+    uploader_id: str | None = None,
+    uploader_url: str | None = None,
+    # Video stats
+    view_count: int | None = None,
+    like_count: int | None = None,
+    comment_count: int | None = None,
+    upload_date: str | None = None,
+    tags: list[str] | None = None,
+    categories: list[str] | None = None,
     detail: str = "balanced",
     focus_start: float | None = None,
     focus_end: float | None = None,
@@ -372,6 +425,18 @@ def build_report(
         codec=codec,
         has_audio=has_audio,
         detected_language=detected_language,
+        channel_id=channel_id,
+        channel_url=channel_url,
+        channel_follower_count=channel_follower_count,
+        channel_is_verified=channel_is_verified,
+        uploader_id=uploader_id,
+        uploader_url=uploader_url,
+        view_count=view_count,
+        like_count=like_count,
+        comment_count=comment_count,
+        upload_date=upload_date,
+        tags=tags or [],
+        categories=categories or [],
     )
 
     focus = None
