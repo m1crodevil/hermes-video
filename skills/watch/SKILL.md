@@ -148,6 +148,8 @@ Optional flags:
 - `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
 - `--auto-moments` — generate LLM prompt for key moment detection from transcript (see "LLM-Driven Moment Detection" below)
 - `--max-moments N` — maximum key moments to identify (default 15, used with `--auto-moments`)
+- `--stats` — include analysis stats in output (processing time, frames, tokens, etc.)
+- `--stats-format telegram|compact` — stats output format (default: telegram)
 
 ### Focusing on a section (higher frame rate)
 
@@ -417,6 +419,45 @@ python3 "${SKILL_DIR}/scripts/apply_corrections.py" \
 | `apply_corrections.py` | Apply corrections to transcript | Transcript + moments | Corrected transcript |
 | `vision_verify.py` | Vision verification workflow | Moments + frames | Verified moments |
 | `synthesis.py` | Grounded synthesis prompt | Transcript + verified | synthesis_prompt.txt |
+| `stats_collector.py` | Collect and format analysis stats | Work directory | Stats JSON + formatted output |
+
+### Analysis Stats
+
+With `--stats`, watch.py includes analysis statistics at the end of the output:
+
+```bash
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --stats
+```
+
+**Output format (Telegram):**
+
+```
+📊 **Analysis Stats**
+━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ Processing Time: 74.9s
+🎬 Video Duration: 12:34
+📐 Resolution: 1280x720
+🖼️ Frames Extracted: 100 @ 512px (scene)
+📝 Transcript: 385 segments [captions (json3)]
+🎯 Key Moments: 13 detected (8 critical)
+🔍 Vision Verifications: 2 completed (1 corrections)
+━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Output format (compact):**
+
+```
+⏱️ 74.9s · 🖼️ 100 frames · 📝 385 segs · 🎯 13 moments · 🔍 2 verified
+```
+
+**Stats included:**
+- Processing time
+- Video duration and resolution
+- Frames extracted (with engine type)
+- Transcript segments (with language and source)
+- Key moments detected (with priority count)
+- Vision verifications (with corrections count)
+- Token usage (if available)
 
 *** Pitfall: ASR Confidence Scores Not Always Available
 
@@ -462,6 +503,10 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 **Transcript and frames are not connected by default.** watch.py outputs transcript and frames as separate streams. The LLM must manually cross-reference timestamps. This causes interpretation errors — e.g., misidentifying who is speaking because the transcript doesn't label speakers. Mitigation: use `--timestamps` to extract frames at key transcript moments, then vision-analyze with specific questions. See "Transcript-Frame Alignment" section above.
 
+**Pitfall: Transcript interpretation errors without visual context.** When analyzing multi-speaker videos, the transcript alone cannot determine who said what. Example: "I recruited him" could be said by either speaker. Always cross-reference with visual evidence (Discord UI, facecam, game UI) before attributing quotes. Use `--auto-moments` to automatically identify moments needing visual verification.
+
+**Pitfall: Hardcoded keywords break cross-language support.** Initial implementations often hardcode keywords for specific languages (e.g., Indonesian deictic markers "ini", "itu"). This fails for other languages. Solution: use LLM-driven detection via `--auto-moments` which works across all languages. The LLM analyzes context, not keywords.
+
 **Multi-speaker videos require visual context for speaker identification.** Auto-captions do not label who is speaking. In Discord calls, podcasts, or interviews, the transcript alone cannot distinguish speakers. Always check frames for Discord UI (participant names), streamer facecam, or game UI (player names) to attribute quotes correctly.
 
 ## Troubleshooting
@@ -502,7 +547,9 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [Scene detection optimization](references/scene-detection-optimization.md) — adaptive thresholds, hybrid approaches, gap-filling for long videos
 - [Transcript proofreading tools](references/transcript-proofreading-tools.md) — landscape of subtitle correction tools (Whisply, skill-caption-clip, DIY LLM approaches)
 - [JSON3 transcript-frame alignment](references/json3-transcript-frame-alignment.md) — word-level timing, LLM-driven moment detection, cross-referencing transcript with visual evidence
+- [Speaker diarization research](references/speaker-diarization-research.md) — WhisperX, pyannote, audio-visual diarization tools, practical recommendations
+- [Analysis stats output](references/analysis-stats-output.md) — --stats flag, Telegram/compact formats, stats.json structure
 
 ## Bundled scripts
 
-`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer). Review scripts before first use to verify behavior.
+`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer), `scripts/transcript_moments.py` (LLM-driven moment detection), `scripts/extract_moment_frames.py` (auto-extract frames at timestamps), `scripts/batch_vision.py` (batch vision prompts), `scripts/apply_corrections.py` (auto-apply transcript corrections), `scripts/vision_verify.py` (vision verification workflow), `scripts/synthesis.py` (grounded synthesis prompts). Review scripts before first use to verify behavior.
