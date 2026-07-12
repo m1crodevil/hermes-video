@@ -61,6 +61,9 @@ def _yt_dlp_network_opts() -> list[str]:
     """
     opts: list[str] = []
     has_deno = shutil.which("deno") is not None
+    # Fallback: check ~/.deno/bin/deno directly (may not be in PATH yet)
+    if not has_deno:
+        has_deno = (Path.home() / ".deno" / "bin" / "deno").is_file()
 
     # JS runtime for YouTube challenge solving (required since mid-2025)
     if has_deno:
