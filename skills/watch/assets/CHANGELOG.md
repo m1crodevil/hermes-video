@@ -2,6 +2,32 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.8.0] — 2026-07-12
+
+### Added
+- **Adaptive scene detection threshold** based on video duration. Short videos (≤1 min) use 0.25; long videos (>60 min) use 0.12. The threshold auto-adjusts for 6 duration tiers to balance sensitivity vs. false positives.
+- **Gap-filling uniform sampling** for long videos (>10 min). After scene detection, large gaps (>2× expected interval) are filled with uniformly-sampled frames. Capped at 5 fill frames per gap.
+- **Minimum frame density guarantee** — videos >10 minutes now produce at least 1 frame per 60 seconds regardless of scene detection results.
+- **Two-pass extraction mode** for `token-burner` detail: runs scene detection (Pass 1) + uniform sampling at 50% density (Pass 2), merges and deduplicates for maximum coverage.
+- `gap-fill` frame reason label (alongside existing `scene-change`, `uniform`, `keyframe`, `transcript-cue`).
+
+### Changed
+- Scene threshold now ranges from 0.12–0.25 based on duration (was fixed at 0.20).
+- Long videos (30+ min) get significantly more frames — typically 2–3× improvement.
+- `token-burner` mode now uses two-pass extraction (scene + uniform) instead of single-pass.
+- `extract_scene_or_uniform()` accepts optional `threshold` and `fill_gaps` parameters.
+- `auto_fps()` enforces minimum fps for videos >10 minutes.
+
+### Fixed
+- Large gaps in frame coverage for long documentary/vlog content (44-min video: 25 frames → 60–80 frames, max gap 8.2 min → <2 min).
+- Sparse frame distribution in slow-transition segments where scene detection misses gradual visual changes.
+
+### Performance
+- Adaptive threshold adds ~1s overhead (ffprobe duration call, only when threshold not explicitly provided).
+- Gap-filling adds ~5–10s for typical long videos (ffmpeg seeks for fill frames).
+- Two-pass mode ~2× slower than single-pass (by design — only used in `token-burner` mode).
+- No new dependencies — remains ffmpeg-only (no PySceneDetect).
+
 ## [1.5.0] — 2026-07-11
 
 ### Added

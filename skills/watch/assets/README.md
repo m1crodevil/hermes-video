@@ -9,7 +9,7 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 
 ## ✨ Features
 
-- 🎬 **Frame extraction** — scene-aware or keyframe-only, with deduplication
+- 🎬 **Frame extraction** — adaptive scene-aware or keyframe-only, with deduplication
 - 📝 **Transcript** — JSON3 captions (free, word-level timing) → Whisper API fallback
 - 🔍 **Detail modes** — `transcript` | `efficient` | `balanced` | `token-burner`
 - 🎯 **Focus mode** — `--start`/`--end` for dense frames on a specific section
@@ -17,6 +17,9 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 - 🧹 **Auto-cleanup** — downloaded video deleted after processing (saves 200MB–1GB)
 - 🍪 **Auto cookies** — detects Chrome/Chromium for YouTube auth
 - 📊 **Structured output** — Pydantic models, JSON + markdown reports
+- 🎯 **Adaptive thresholds** — scene detection auto-tunes based on video duration
+- 📏 **Gap-filling** — uniform frames inserted in large gaps for consistent coverage
+- ✅ **Minimum density guarantee** — at least 1 frame per 60s for videos >10 min
 
 ## 📦 Prerequisites
 

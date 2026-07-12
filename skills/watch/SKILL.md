@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.6.0"
+version: "1.8.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -131,6 +131,8 @@ print(f'Duration: {m[\"duration\"]}s')
 
 **Pitfall:** yt-dlp's `--convert-subs json3` does NOT work. The script handles this automatically via `--sub-format "json3/best"`.
 
+**Pitfall: report.json key paths are FLAT, not nested.** When reading transcript data from report.json, use `d.get("transcript_segments", [])` — NOT `d.get("transcript", {}).get("segments", [])`. The Pydantic model serializes as flat keys: `transcript_segments`, `transcript_source`, `transcript_text`. Common mistake: checking the wrong key path and falsely concluding "segments: 0" when transcript is actually present.
+
 Optional flags:
 - `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames; `efficient` = keyframes (cap 50); `balanced` = scene-aware (cap 100); `token-burner` = uncapped.
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
@@ -252,7 +254,52 @@ Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
 
-**transcript** — captions only; no video download when captions exist. **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames; balanced caps at 100, token-burner is uncapped. Frame report lines include timestamp and selection reason.
+**transcript** — captions only; no video download when captions exist. **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames with adaptive thresholding; balanced caps at 100, token-burner uses two-pass (scene detection + uniform sampling) and is uncapped. Frame report lines include timestamp and selection reason.
+
+### Adaptive scene detection
+
+The scene detection threshold automatically adjusts based on video duration to capture more representative frames for long videos while avoiding false positives in short clips:
+
+| Duration | Threshold | Rationale |
+|----------|-----------|-----------|
+| ≤1 min | 0.25 | Higher for short clips (avoid false positives) |
+| ≤5 min | 0.22 | Moderate |
+| ≤10 min | 0.20 | Default (works well for most content) |
+| ≤30 min | 0.17 | Lower for longer content |
+| ≤60 min | 0.15 | Even lower for long-form |
+| >60 min | 0.12 | Most sensitive for very long videos |
+
+For long videos (>30 min), this significantly improves coverage:
+- **Before:** 25 frames for 44-min video (8.2 min max gap)
+- **After:** 60–80 frames for 44-min video (<2 min max gap)
+
+### Gap-filling
+
+After scene detection, large gaps (>2× expected interval) are filled with uniformly-sampled frames to ensure minimum coverage. This prevents sparse regions where scene detection misses gradual transitions (e.g., slow pans in documentaries).
+
+### Minimum frame density
+
+Videos longer than 10 minutes guarantee at least 1 frame per 60 seconds, regardless of scene detection results. This ensures baseline coverage even with sparse scene changes.
+
+### Two-pass mode (token-burner)
+
+`token-burner` detail runs two extraction passes and merges results:
+1. **Pass 1:** Scene detection (catches hard cuts, fast transitions)
+2. **Pass 2:** Uniform sampling at 50% density (catches gradual transitions)
+
+Results are merged and deduplicated for maximum frame coverage.
+
+### Frame reasons
+
+Each extracted frame is labeled with a selection reason:
+
+| Reason | Meaning |
+|--------|---------|
+| `scene-change` | Detected by adaptive ffmpeg scene threshold |
+| `gap-fill` | Inserted to fill large gaps between scenes |
+| `uniform` | From fallback uniform sampling (fewer than SCENE_MIN_FRAMES detected) |
+| `keyframe` | I-frame extraction (`efficient` mode) |
+| `transcript-cue` | User-specified timestamps via `--timestamps` |
 
 ## Transcript-cue frames
 
@@ -320,6 +367,8 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [Groq Whisper limits](references/groq-whisper-limits.md) — file size, rate limits, pricing, integration notes
 - [Free transcription alternatives](references/free-transcription-alternatives.md) — faster-whisper, whisper.cpp, Qwen3-ASR, Puter.js evaluation, MiMo ASR limits
 - [YouTube metadata extraction](references/youtube-metadata-extraction.md) — yt-dlp channel/video stats without API key, channel handle resolution, YouTube Data API v3 free tier
+- [Truncation-fabrication incident](references/truncation-fabrication-incident.md) — case study: terminal output truncation led to fabricated metadata, fixes applied
+- [Scene detection optimization](references/scene-detection-optimization.md) — adaptive thresholds, hybrid approaches, gap-filling for long videos
 
 ## Bundled scripts
 
