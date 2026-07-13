@@ -19,7 +19,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import DEFAULT_MIN_MOMENTS, frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, extract_two_pass, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from download import download_sections_parallel  # noqa: E402
+from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_from_sections, extract_keyframes, extract_scene_or_uniform, extract_two_pass, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from models import build_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -62,9 +63,10 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
     ap.add_argument(
         "--detail",
-        choices=["transcript", "transcript-moments", "efficient", "balanced", "token-burner"],
+        choices=["screenshot-first", "transcript", "transcript-moments", "efficient", "balanced", "token-burner"],
         default=None,
-        help="Fidelity/speed dial: transcript (no frames), efficient (fast keyframes, cap 50), "
+        help="Fidelity/speed dial: screenshot-first (transcript-guided section downloads, fastest for URLs with captions), "
+             "transcript (no frames), efficient (fast keyframes, cap 50), "
              "balanced (scene, cap 100), token-burner (scene, uncapped).",
     )
     ap.add_argument(
@@ -196,6 +198,9 @@ def main() -> int:
     need_video = not (detail == "transcript" and transcript_segments and not cue_timestamps)
     # For transcript-moments first run (no key_moments.json yet), skip video download
     if detail == "transcript-moments" and not has_moments and transcript_segments:
+        need_video = False
+    # Screenshot-first: skip full video download (sections are downloaded instead)
+    if detail == "screenshot-first" and transcript_segments:
         need_video = False
     # Pass existing subtitle to download_url() to prevent 429 re-download
     existing_sub = dl.get("subtitle_path") if dl.get("subtitle_path") else None
@@ -354,7 +359,110 @@ def main() -> int:
                 f"  4. Re-run watch.py with same args to extract frames", file=sys.stderr,
             )
 
-    elif detail != "transcript" and video_path and detail_budget != 0:
+    # ── Screenshot-first mode: parallel section downloads (no full video) ──
+    elif detail == "screenshot-first" and url_source and transcript_segments:
+        # Determine timestamps to capture
+        screenshot_timestamps: list[float] = []
+
+        if cue_timestamps:
+            # User provided explicit --timestamps
+            screenshot_timestamps = cue_timestamps
+            print(
+                f"[watch] screenshot-first: using {len(screenshot_timestamps)} explicit timestamps",
+                file=sys.stderr,
+            )
+        elif moments_json_path.exists():
+            # key_moments.json exists — use those timestamps
+            try:
+                moments_data = json.loads(moments_json_path.read_text())
+                for m in moments_data:
+                    ts = m.get("timestamp", 0)
+                    if isinstance(ts, str):
+                        parts = ts.strip().split(":")
+                        if len(parts) == 2:
+                            ts = int(parts[0]) * 60 + float(parts[1])
+                        elif len(parts) == 3:
+                            ts = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                        else:
+                            ts = float(ts)
+                    screenshot_timestamps.append(float(ts))
+                screenshot_timestamps = sorted(set(screenshot_timestamps))
+                print(
+                    f"[watch] screenshot-first: using {len(screenshot_timestamps)} timestamps from key_moments.json",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(f"[watch] screenshot-first: failed to parse key_moments.json: {exc}", file=sys.stderr)
+
+        if not screenshot_timestamps:
+            # No timestamps available — auto-generate from transcript
+            # Pick evenly-spaced timestamps across the video duration
+            if full_duration > 0:
+                num_auto = min(max(5, int(full_duration / 120)), 20)  # 1 per 2 min, 5-20 frames
+                step = full_duration / num_auto
+                screenshot_timestamps = [round(i * step + step / 2, 1) for i in range(num_auto)]
+                # Clamp to valid range
+                screenshot_timestamps = [t for t in screenshot_timestamps if t < full_duration]
+                print(
+                    f"[watch] screenshot-first: auto-generated {len(screenshot_timestamps)} timestamps "
+                    f"(1 per ~{step:.0f}s across {full_duration:.0f}s video)",
+                    file=sys.stderr,
+                )
+
+        if not screenshot_timestamps:
+            # Still no timestamps — generate prompt for agent
+            from transcript_moments import format_transcript_for_analysis, generate_prompt
+            transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+            info = dl.get("info") or {}
+            moments_prompt = generate_prompt(
+                transcript_for_analysis, info,
+                max_moments=min_moments, min_moments=min_moments,
+            )
+            moments_prompt_path = work / "moments_prompt.txt"
+            moments_prompt_path.write_text(moments_prompt, encoding="utf-8")
+            print(f"[watch] screenshot-first: no timestamps provided", file=sys.stderr)
+            print(f"[watch] LLM prompt written to: {moments_prompt_path}", file=sys.stderr)
+            print(f"[watch] Agent workflow:", file=sys.stderr)
+            print(f"  1. Read {moments_prompt_path}", file=sys.stderr)
+            print(f"  2. Analyze transcript, identify {min_moments}+ key moments", file=sys.stderr)
+            print(f"  3. Write timestamps to {moments_json_path}", file=sys.stderr)
+            print(f"  4. Re-run watch.py with same args", file=sys.stderr)
+        else:
+            # Download sections in parallel + extract frames
+            section_files = download_sections_parallel(
+                args.source, screenshot_timestamps, work / "sections",
+                use_cookies=args.cookies,
+            )
+            if section_files:
+                frames, frame_meta = extract_from_sections(
+                    section_files, work / "frames",
+                    resolution=args.resolution,
+                )
+                # Cleanup sections
+                shutil.rmtree(work / "sections", ignore_errors=True)
+            else:
+                # Fallback: download full video + use efficient mode
+                if not video_path and url_source:
+                    print("[watch] downloading video for fallback…", file=sys.stderr)
+                    dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies)
+                    video_path = dl["video_path"]
+                    meta = get_metadata(video_path)
+                print("[watch] screenshot-first: all section downloads failed, falling back to efficient", file=sys.stderr)
+                detail = "efficient"
+
+    # Screenshot-first fallback: no URL or no captions → fall back to efficient
+    elif detail == "screenshot-first":
+        if not url_source:
+            print("[watch] screenshot-first: local file — falling back to efficient (keyframes)", file=sys.stderr)
+        else:
+            print("[watch] screenshot-first: no captions available, falling back to efficient", file=sys.stderr)
+        if url_source and not video_path:
+            dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies)
+            video_path = dl["video_path"]
+            meta = get_metadata(video_path)
+        detail = "efficient"
+
+    if detail != "transcript" and detail != "screenshot-first" and video_path and detail_budget != 0:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -463,14 +571,7 @@ def main() -> int:
             f"Token-burner detail selected {len(frames)} frames. "
             "This may use a large number of image tokens."
         )
-    if not focused and full_duration > 600 and detail not in ("transcript", "transcript-moments", "token-burner"):
-        mins = int(full_duration // 60)
-        warnings.append(
-            f"This is a {mins}-minute video. Frame coverage is sparse at this length "
-            f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
-            "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
-            "`--detail token-burner` to keep every scene-change frame across the whole video."
-        )
+
     if not focused and full_duration > 1200:
         warnings.append(
             "⚠️ Long video (>20 min): terminal output may be truncated. "
