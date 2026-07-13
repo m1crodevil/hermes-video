@@ -71,7 +71,8 @@ Only needed when videos have **no native captions** (rare for YouTube). Most You
 Improves subtitle download reliability for age-restricted or private videos:
 - Install Chrome/Chromium
 - Log in to YouTube in the browser
-- The script auto-detects cookies — no configuration needed
+- Pass `--cookies` flag explicitly when needed (e.g. `--cookies`)
+- **Note:** cookies break `android_vr` client — only use when necessary. Default is OFF.
 
 ## 🚀 Installation
 
@@ -233,7 +234,7 @@ skills/watch/
 
 - **No video upload** — only extracted audio goes to Whisper API (and only when captions are missing)
 - **No credentials stored** — API keys stay in `~/.config/watch/.env` (mode 0600)
-- **Browser cookies read-only** — uses `--cookies-from-browser`, never writes to cookie store
+- **Browser cookies opt-in** — `--cookies` flag required; default is OFF (android_vr without cookies is most reliable)
 - **Auto-cleanup** — downloaded video deleted after processing (unless `--keep-video`)
 
 ## 📄 License

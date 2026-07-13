@@ -57,6 +57,8 @@ class MomentReason(str, Enum):
     SPEAKER_ID = "speaker_id"
     VISUAL_CONTEXT = "visual_context"
     ENTITY = "entity"
+    TOPIC_TRANSITION = "topic_transition"
+    KEY_ARGUMENT = "key_argument"
     UNKNOWN = "unknown"
 
 

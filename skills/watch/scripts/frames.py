@@ -448,6 +448,69 @@ def extract_at_timestamps(
     return out, meta
 
 
+def extract_from_sections(
+    section_files: dict[float, str],
+    out_dir: Path,
+    resolution: int = 512,
+) -> tuple[list[dict], dict]:
+    """Extract one frame from each pre-downloaded section video.
+
+    Each section is a short clip (typically 2 seconds) downloaded via
+    ``download_sections_parallel()``. This function extracts a single frame
+    from the middle of each section — much faster than seeking in a full video.
+
+    Args:
+        section_files: Mapping of timestamp → video file path (from section downloads).
+        out_dir: Directory to write extracted JPEG frames.
+        resolution: Frame width in pixels (default 512).
+
+    Returns:
+        (frames_list, metadata_dict) — same contract as extract_at_timestamps().
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("frame_*.jpg"):
+        existing.unlink()
+
+    frames: list[dict] = []
+    for ts in sorted(section_files.keys()):
+        video_path = section_files[ts]
+        if not video_path or not Path(video_path).exists():
+            continue
+
+        out_path = out_dir / f"frame_{len(frames):04d}.jpg"
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", str(Path(video_path).resolve()),
+            "-frames:v", "1",
+            "-vf", _scale_filter(resolution),
+            "-q:v", "4",
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if out_path.exists():
+            frames.append({
+                "index": len(frames),
+                "timestamp_seconds": ts,
+                "path": str(out_path),
+                "reason": "transcript-cue",
+            })
+
+    meta = {
+        "engine": "screenshot-first",
+        "candidate_count": len(section_files),
+        "selected_count": len(frames),
+        "deduped_count": 0,
+        "fallback": False,
+    }
+    return frames, meta
+
+
 def _even_sample(candidates: list[dict], n: int) -> list[dict]:
     """Pick ``n`` evenly-spaced candidates (always including first and last),
     delete the JPEGs we drop, and reindex the survivors 0..len-1.

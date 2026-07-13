@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.12.0"
+version: "1.14.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -18,8 +18,8 @@ metadata:
     config:
       - key: hermes-video.default_detail
         description: "Default detail mode for video analysis"
-        default: "balanced"
-        prompt: "Default detail mode (transcript|efficient|balanced|token-burner)"
+        default: "screenshot-first"
+        prompt: "Default detail mode (screenshot-first|transcript|efficient|balanced|token-burner)"
 ---
 
 # /watch
@@ -100,20 +100,87 @@ When captions are available, this is the **fastest and most accurate** approach:
 
 - [ ] Step 0: Setup preflight (`setup.py --json`)
 - [ ] Step 1: Parse source + question from user input
-- [ ] Step 2: Run `watch.py "<source>" --detail transcript-moments --min-moments 50`
+- [ ] Step 2: Run `watch.py "<source>" --detail transcript-moments --min-moments 50 --out-dir <FIXED_DIR>`
   - First run: generates moments prompt (no video download, ~15s)
   - Script prints instructions for agent workflow
+  - **CRITICAL: Use `--out-dir` to pin the working directory.** Without it, each run creates a new `/tmp/watch-XXXX` and key_moments.json from run 1 is lost on run 2.
 - [ ] Step 2b: Process moments prompt
   - Read `<workdir>/moments_prompt.txt`
   - Analyze transcript, identify 50+ key moments
   - Write moments as JSON to `<workdir>/key_moments.json`
-- [ ] Step 2c: Re-run `watch.py` with same args (video downloads + frames extracted)
+- [ ] Step 2c: Re-run `watch.py` with same args including `--out-dir <FIXED_DIR>` (video downloads + frames extracted)
   - Or: use `background=true` for the re-run
 - [ ] Step 2d: Collect metadata + stats from work dir (**MANDATORY**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
-- [ ] Step 4: `vision_analyze` 8-15 representative frames (from the 50+ extracted)
+- [ ] Step 4: `vision_analyze` 21+ representative frames (from the 50+ extracted)
 - [ ] Step 5: Answer user (specific question OR summarize)
 - [ ] Step 6: Handle follow-ups from context, cleanup
+
+### Screenshot-First Mode (recommended for long videos with captions)
+
+**The fastest approach for videos >10 min with captions.** Instead of downloading the full video (413MB for 58 min), download only 2-second sections at LLM-identified timestamps using `yt-dlp --download-sections`. Parallel downloads make this extremely fast.
+
+**Benchmark results (58-min video, Indonesian):**
+- Screenshot-first (5 frames): **30.0s, ~3MB** (10x faster, 99% less data)
+- Screenshot-first (20 frames, auto-timestamps): **66.6s, ~12MB** (5x faster, 97% less data)
+- Full download + scene detection: **342s, 413MB**
+
+**How it works:**
+1. Fetch captions (~5s, no video download)
+2. Determine timestamps: explicit `--timestamps`, `key_moments.json`, or **auto-generate from transcript** (1 per 2 min, 5-20 frames)
+3. Parallel section downloads (~6s for 5 timestamps, ~15s for 20)
+4. Extract frames from downloaded sections (~1s)
+5. Vision analyze frames
+
+**CRITICAL: `--out-dir` for two-run workflows.** Each `watch.py` run creates a new temp directory by default. When using screenshot-first with LLM-driven moment detection (write `key_moments.json` after run 1, consume in run 2), you MUST pin the directory with `--out-dir <FIXED_DIR>` on BOTH runs. Otherwise run 2 creates a new empty dir and finds no `key_moments.json`. Pattern:
+```bash
+# Run 1: generate moments prompt (no video download)
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail screenshot-first --out-dir /tmp/watch-myvideo
+# Agent writes key_moments.json to /tmp/watch-myvideo/
+# Run 2: download sections + extract frames at moment timestamps
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail screenshot-first --out-dir /tmp/watch-myvideo
+```
+
+**Auto-timestamp generation:** When no timestamps are provided and no `key_moments.json` exists, screenshot-first automatically generates evenly-spaced timestamps across the video duration. For a 58-min video, this produces 20 timestamps (1 per ~174s). No agent LLM interaction needed — works end-to-end in a single run.
+
+**When to use:**
+- ✅ Video dengan captions/transcript (YouTube auto-captions ada)
+- ✅ Video panjang (>20 menit) — optimal coverage dengan 20+ auto-timestamps
+- ⚠️ Video 10-20 menit — auto-timestamp cuma 5-10, kurang dari 21 minimum. Pakai `balanced`/`efficient` atau tambah `--timestamps` manual
+- ✅ Pertanyaan spesifik ("apa yang terjadi di menit 25?")
+- ❌ Video tanpa captions (pakai efficient/balanced)
+- ❌ Video <10 menit (pakai efficient/balanced — lebih cepat dan dapat lebih banyak frames)
+- ❌ Butuh visual coverage menyeluruh (scene detection lebih komprehensif)
+
+**Edge cases tested:**
+- Timestamp 0 (awal video): works ✅
+- Timestamp akhir video: works ✅
+- 1 detik section: works (402KB) ✅
+- 5 concurrent downloads: 100% success ✅
+- 10 concurrent downloads: 90% success (rate limit)
+- Exact minute boundary: works ✅
+- Tanpa `-f` spec: gets webm (1.4MB) — **wajib spec format**
+
+**Pitfalls:**
+- **Concurrent file conflicts**: Setiap section download ke separate subdirectory
+- **Format wajib**: Selalu pakai `-f "bv*[height<=720]"` — tanpa spec, yt-dlp pilih webm (2x lebih besar)
+- **Rate limiting**: Max 8 concurrent, retry on failure
+- **Transcript dependency**: Transcript jelek → salah identify timestamps → frame salah
+- **No scene discovery**: Hanya extract di timestamps yang LLM identify — visual-only moments bisa miss
+
+**Fallback chain:**
+```
+screenshot-first
+├── Captions available?
+│   ├── YA → LLM timestamps → section downloads → extract
+│   │         ├── >50% section download gagal? → fallback ke efficient
+│   │         └── LLM gak bisa identify timestamps? → fallback ke efficient
+│   └── TIDAK → efficient (keyframes) or balanced (scene detection)
+├── Local file? → skip screenshot-first, use balanced/efficient
+└── --timestamps explicit? → section downloads pada timestamps yang diberi
+```
+
+**Implementation status:** Implemented in v1.15+ (`download_sections_parallel()` + `extract_from_sections()`). See [screenshot-first-pipeline.md](references/screenshot-first-pipeline.md) for architecture and edge case details.
 
 ### Classic Mode (scene detection)
 
@@ -127,7 +194,7 @@ For videos **without captions** or when visual coverage is needed:
 - [ ] Step 2b: Wait for completion (**background mode only** — `process(action='wait')`)
 - [ ] Step 2c: Collect metadata + stats from work dir (**MANDATORY — always, even on timeout**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
-- [ ] Step 4: `vision_analyze` 8-15 representative frames
+- [ ] Step 4: `vision_analyze` 21+ representative frames
 - [ ] Step 5: Answer user (specific question OR summarize)
 - [ ] Step 6: Handle follow-ups from context, cleanup
 
@@ -223,7 +290,7 @@ if os.path.exists(stats_p):
 **Pitfall: report.json key paths are FLAT, not nested.** When reading transcript data from report.json, use `d.get("transcript_segments", [])` — NOT `d.get("transcript", {}).get("segments", [])`. The Pydantic model serializes as flat keys: `transcript_segments`, `transcript_source`, `transcript_text`. Common mistake: checking the wrong key path and falsely concluding "segments: 0" when transcript is actually present.
 
 Optional flags:
-- `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames; `efficient` = keyframes (cap 50); `balanced` = scene-aware (cap 100); `token-burner` = uncapped.
+- `--detail transcript|screenshot-first|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames; `screenshot-first` = LLM-driven section downloads (fastest for long videos with captions); `efficient` = keyframes (cap 50); `balanced` = scene-aware (cap 100); `token-burner` = uncapped.
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
 - `--timestamps T1,T2,…` — grab a frame at each absolute timestamp. Use this after reading the transcript to capture deictic moments ("look here", "notice this"). See "Transcript-cue frames" below.
 - `--max-frames N` — override the preset cap (e.g. `--max-frames 40`)
@@ -235,6 +302,7 @@ Optional flags:
 - `--no-whisper` — disable Whisper fallback entirely
 - `--no-dedup` — keep near-duplicate frames (usually dropped to save budget)
 - `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
+- `--cookies` — use Chrome cookies for yt-dlp (opt-in). Breaks android_vr client — only use for age-restricted or private videos. Default: OFF (android_vr without cookies is most reliable).
 - `--auto-moments` — generate LLM prompt for key moment detection from transcript (see "LLM-Driven Moment Detection" below)
 - `--max-moments N` — maximum key moments to identify (default 15, used with `--auto-moments`)
 - `--min-moments N` — minimum moments for transcript-moments mode (default 50)
@@ -273,7 +341,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 **Step 4 — view frames.** The script outputs JPEG frame paths.
 
-**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change engines name files by extraction index (`frame_0211.jpg`), not timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first, then pick 8-15 representative frames spread across the list for `vision_analyze`.
+**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change engines name files by extraction index (`frame_0211.jpg`), not timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first, then pick 21+ representative frames spread across the list for `vision_analyze`.
 
 **Pitfall:** `read_file` cannot handle binary images. Use `vision_analyze` instead:
 
@@ -281,7 +349,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 vision_analyze(image_url="/tmp/watch-XXXX/frames/frame_0001.jpg", question="What is shown in this frame?")
 ```
 
-For 50+ frames, sample 8-15 representative frames evenly rather than loading all — vision calls are expensive.
+For 50+ frames, sample 21+ representative frames evenly rather than loading all — vision calls are expensive but thorough coverage is mandatory.
 
 **Step 5 — answer the user.** You now have two streams of evidence:
 - **Frames** — what's on screen at each timestamp
@@ -311,6 +379,10 @@ The terminal tool truncates output beyond ~50K chars. For long videos (>20 min),
 - **User asked "summarize"** → structure, key moments, notable visuals, spoken content
 - **No question** → summarize what happens in the video
 - **Transcript-only mode** → synthesize structure and key moments, don't paste full transcript
+
+### Output language
+
+Match the output language to the transcript language. When the transcript is in Indonesian (or another non-English language), deliver the summary in that language — mix in English technical terms naturally (e.g., "scene detection", "transcript segments", "vision analysis"). Do NOT force English output on non-English content. The stats block and metadata formatting remain language-agnostic (emoji + numbers).
 
 ### Output format (Telegram)
 
@@ -365,20 +437,21 @@ Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
 
-**transcript** — captions only; no video download when captions exist. **transcript-moments** — captions + LLM-driven moment detection + frame extraction at 50+ timestamps (recommended for long videos with captions). **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames with adaptive thresholding; balanced caps at 100, token-burner uses two-pass (scene detection + uniform sampling) and is uncapped. Frame report lines include timestamp and selection reason.
+**screenshot-first** — LLM-driven section downloads; fastest for long videos with captions (47x faster than scene detection). **transcript** — captions only; no video download when captions exist. **transcript-moments** — captions + LLM-driven moment detection + frame extraction at 50+ timestamps (recommended for long videos with captions). **efficient** — keyframes only (`ffmpeg -skip_frame nokey`), near-instant pass on scene cuts. **balanced** / **token-burner** — scene-aware frames with adaptive thresholding; balanced caps at 100, token-burner uses two-pass (scene detection + uniform sampling) and is uncapped. Frame report lines include timestamp and selection reason.
 
 ### Detail mode comparison
 
-| Mode | Speed (54 min) | Frames | Best for | Misses |
-|---|---|---|---|---|
-| `transcript` | ~5s | 0 | Dialogue-heavy, transcript-first | All visual context |
-| `efficient` | ~10-20s | ≤50 (I-frames) | Quick overview, hard cuts | Gradual transitions, talking head between keyframes |
-| `balanced` | ~300s | ≤100 (scene-aware) | Most content, recommended | Very slow for >30 min videos |
-| `token-burner` | ~500s+ | uncapped | Max fidelity, short videos | Token-expensive |
+| Mode | Speed (58 min) | Data | Frames | Best for | Misses |
+|---|---|---|---|---|---|
+| `screenshot-first` | ~35s | ~10MB | LLM-driven | **PRIMARY** — long videos with captions | Visual-only moments not in transcript |
+| `transcript` | ~5s | 0MB | 0 | Dialogue-heavy, transcript-first | All visual context |
+| `efficient` | ~10-20s | 413MB | ≤50 (I-frames) | Quick overview, hard cuts | Gradual transitions |
+| `balanced` | ~300s | 413MB | ≤100 (scene-aware) | Most content, recommended | Very slow for >30 min |
+| `token-burner` | ~500s+ | 413MB | uncapped | Max fidelity, short videos | Token-expensive |
 
-**Rule of thumb:** For videos >20 min where transcript is the primary evidence, use `efficient` or `balanced --max-frames 50`. For podcast/talk show with mostly static camera, `efficient` misses little. For documentary/vlog with frequent visual changes, `balanced` is worth the wait.
+**Rule of thumb:** For videos >20 min with captions, use `screenshot-first` (fastest, least data). For videos 10-20 min with captions, use `balanced` (thorough) or `efficient` (fast) — screenshot-first produces too few frames at this length. For videos <10 min, use `efficient` (fast) or `balanced` (thorough). For videos without captions, use `efficient` (fast) or `balanced` (thorough). For podcast/talk show with mostly static camera, `efficient` misses little.
 
-**Scene detection performance:** For long videos (>30 min), scene detection dominates processing time (~300s for 54 min) because ffmpeg must decode every frame. See [scene-detection-optimization.md](references/scene-detection-optimization.md) for proposed fps downsampling technique and speedup estimates.
+**Scene detection performance:** For long videos (>30 min), scene detection dominates processing time (~300s for 54 min) because ffmpeg must decode every frame. fps downsampling before the select filter was benchmarked and does NOT help (~2% improvement, noise). Hardware acceleration (QSV/VAAPI) also fails or is slower due to GPU→CPU transfer overhead. See [optimization-benchmarks-2026-07.md](references/optimization-benchmarks-2026-07.md) for full benchmark data. What works: transcript-first mode (23x faster), efficient/keyframe mode (17x faster).
 
 ### Adaptive scene detection
 
@@ -489,7 +562,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail transcript --auto-moment
 - `timestamp_fmt` — "MM:SS" format
 - `word` — triggering word/phrase
 - `context` — surrounding text
-- `reason` — proper_noun, claim, deictic, speaker_id, visual_context, entity
+- `reason` — proper_noun, claim, deictic, speaker_id, visual_context, entity, topic_transition, key_argument
 - `question` — specific vision question
 - `priority` — 1 (critical) to 5 (nice-to-have)
 
@@ -497,16 +570,16 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail transcript --auto-moment
 
 ### Complete LLM-Driven Workflow
 
-The full workflow for transcript-frame alignment:
+The full workflow for transcript-frame alignment. **Both runs MUST use the same `--out-dir`** so the second run finds `key_moments.json` written after the first:
 
 ```bash
-# Step 1: Run watch.py with --auto-moments
-python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments
+# Step 1: Run watch.py with --auto-moments (pin work dir)
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments --out-dir /tmp/watch-myvideo
 
-# Step 2: LLM processes moments_prompt.txt → writes key_moments.json
+# Step 2: LLM processes moments_prompt.txt → writes key_moments.json to /tmp/watch-myvideo/
 
-# Step 3: Re-run to load moments into report
-python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments
+# Step 3: Re-run to load moments into report (same --out-dir!)
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments --out-dir /tmp/watch-myvideo
 
 # Step 4: Extract frames at moment timestamps
 python3 "${SKILL_DIR}/scripts/extract_moment_frames.py" \
@@ -598,7 +671,7 @@ See [json3-transcript-frame-alignment.md](references/json3-transcript-frame-alig
 
 ## Cookies & Rate Limiting
 
-YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download, browser cookies (`--cookies-from-browser chrome` auto-detected), and sleep intervals (`--sleep-subtitles 3`). For best reliability, log in to YouTube in Chrome. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
+YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download and sleep intervals (`--sleep-subtitles 3`). As of v1.14+, cookies are **opt-in** (`--cookies` flag) — they break the `android_vr` client which is the most reliable for YouTube 2026+. Only use cookies for age-restricted or private videos. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
 
 ## Video cleanup and disk usage
 
@@ -632,6 +705,54 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 **Multi-speaker videos require visual context for speaker identification.** Auto-captions do not label who is speaking. In Discord calls, podcasts, or interviews, the transcript alone cannot distinguish speakers. Always check frames for Discord UI (participant names), streamer facecam, or game UI (player names) to attribute quotes correctly.
 
+**Pitfall: fps downsampling and hardware acceleration DON'T speed up scene detection.** Adding `fps=N` before the `select` filter was benchmarked and shows ~2% improvement (noise) — the fps filter overhead cancels out frame decode savings. Hardware acceleration (QSV/VAAPI) fails with the select filter ("Impossible to convert between formats") or is 2x slower due to GPU→CPU transfer overhead. Don't waste time on these approaches. Use `--detail transcript` (23x faster) or `--detail efficient` (17x faster) instead. See [optimization-benchmarks-2026-07.md](references/optimization-benchmarks-2026-07.md).
+
+**Pitfall: ffmpeg crash (exit -6 / SIGABRT) on section MP4 files.** When extracting frames from short section clips downloaded via `--download-sections`, ffmpeg may crash with "Assertion pkt failed at src/fftools/ffmpeg_dec.c:597" and exit code -6. The frames ARE valid JPEGs — the crash happens during cleanup, not extraction. Fix: check `out_path.exists()` instead of `returncode == 0` in `extract_from_sections()`. This is a known ffmpeg issue with merged MP4 containers from yt-dlp section downloads.
+
+**Pitfall: screenshot-first produces too few frames for short/medium videos (<15 min).** Screenshot-first auto-generates timestamps at 1-per-120s intervals. For a 14-min video, that's only 7 frames — far below the 21+ minimum expected for thorough analysis. **`--max-frames` does NOT increase auto-generated timestamps** — it only caps the output. For videos <15 min, use `balanced` or `efficient` mode instead, which use scene detection or keyframes to produce 21+ frames. Screenshot-first is optimized for long videos (>20 min) where 20 timestamps provides adequate coverage. For medium-length videos (10-20 min), either: (1) switch to `balanced`/`efficient`, or (2) use `--timestamps` to manually specify 21+ evenly-spaced timestamps.
+
+**Script warnings are not the LLM's job — the script should not warn about "sparse coverage".** The script extracts frames; the LLM reads the transcript and decides whether more frames are needed. If transcript analysis reveals key moments requiring visual verification (proper nouns, deictic references, claims), the LLM re-runs with `--timestamps` on specific timestamps. The script should never tell the agent "coverage is sparse" — that's a judgment call the agent makes based on transcript content. Minimal extraction first → transcript analysis → targeted re-run if needed.
+
+**Pitfall: parallel section download limits.** YouTube rate-limits concurrent connections. Max 8 concurrent downloads before failures begin (90% success at 10, drops further beyond). The `download_sections_parallel()` function uses `max_concurrent=8` by default. If you see >50% failures, reduce concurrency. Each section download takes ~2-3s regardless of timestamp position.
+
+**Pitfall: two-run workflows lose key_moments.json without `--out-dir`.** Each `watch.py` run creates a new `/tmp/watch-XXXX` directory by default. In screenshot-first or transcript-moments mode, the workflow is: (1) run generates `moments_prompt.txt`, (2) agent writes `key_moments.json`, (3) re-run consumes it. Without `--out-dir`, run 2 creates a NEW empty directory and finds no `key_moments.json` — falling back to auto-generated timestamps instead of the LLM-identified ones. **Fix: always pass `--out-dir <FIXED_DIR>` on BOTH runs.** Create the dir first with `mkdir -p`, then place `key_moments.json` there before the second run. This is the #1 cause of "why didn't my key moments get used?" failures.
+
+**Pitfall: yt-dlp "No supported JavaScript runtime" warning.** As of 2026, yt-dlp prints `WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default` even when deno IS installed. This is a non-blocking warning — video downloads and transcripts still work. Ignore it unless downloads actually fail with 403. The warning appears because yt-dlp checks for runtimes in a specific order and deno detection can be flaky.
+
+**Pitfall: yt-dlp section downloads require `-f` format spec.** Without `-f "bv*[height<=720]"`, yt-dlp auto-selects webm format (1.4MB per section vs 700KB for mp4). Always pass format spec in `download_sections_parallel()`. The function handles this internally but manual section downloads must include it.
+
+**Video download 403 in watch.py but manual yt-dlp works.** As of v1.14+, cookies are OFF by default (`--cookies` is opt-in). The most common cause was `--cookies-from-browser chrome` causing yt-dlp to skip `android_vr` (which doesn't support cookies), forcing `web_creator` which needs a GVS PO Token. With cookies off, `android_vr` is used by default and is the most reliable client for YouTube 2026+.
+
+If you still see 403, check: (1) is `--cookies` passed? If so, remove it unless needed. (2) Is deno installed? Run `setup.py --json` to verify. (3) Try manual fallback below.
+
+**Root cause diagnosis:** Run `yt-dlp -v --skip-download --dump-json "<URL>" 2>&1 | grep "player API"` to see which client is selected. If it shows `android_vr` → good. If it shows `tv downgraded` or `web_creator` → something is overriding the default.
+
+**Fix options (pick one):**
+
+**Option A — Quick manual fallback:**
+1. Download video + captions together (captions MUST be included or Whisper fallback triggers):
+   ```bash
+   yt-dlp --no-cookies-from-browser -f "134+140" --merge-output-format mp4 \
+     --write-auto-sub --sub-lang en --sub-format json3/best \
+     -o "<workdir>/download/video.mp4" "<URL>"
+   ```
+2. The file may end up as `.mp4.webm` (merged format) — this is fine for ffmpeg
+3. Extract frames at moment timestamps using ffmpeg directly:
+   ```bash
+   ffmpeg -y -ss <seconds> -i <workdir>/download/video.mp4.webm -frames:v 1 -q:v 3 <workdir>/moment_frames/moment_NNN_MM-SS.jpg
+   ```
+4. Or copy `key_moments.json` to the work dir and re-run watch.py with `--out-dir` pointing to it
+5. Clean up: `rm -f <workdir>/download/video.*`
+
+**Pitfall: manual download without `--write-auto-sub` causes Whisper fallback.** If you download video only (no captions flag), `watch.py` won't find `.json3` files in the work dir and will fall back to Whisper — even though the video has native captions on YouTube. Always include `--write-auto-sub --sub-lang en --sub-format json3/best` in manual downloads.
+
+**Option B — Patch download.py (persistent fix):**
+Already fixed in v1.14+: `_yt_dlp_network_opts()` no longer adds `--cookies-from-browser` by default. If you're on an older version, add `--extractor-args "youtube:player_client=android_vr,web"` to `_yt_dlp_network_opts()` in `scripts/download.py`.
+
+**`.mp4.webm` extension issue.** When video (mp4) + audio (webm/opus) are merged, yt-dlp outputs `.mp4.webm` instead of `.mp4`. `_pick_video()` in download.py handles `.webm` extension, so this is cosmetic — ffmpeg reads it fine. But downstream code expecting `.mp4` may fail. Fix: rename after download or update `_pick_video()` glob to include `.mp4.webm`.
+
+**MomentReason enum must include all values from SKILL.md.** The `MomentReason` enum in `scripts/models.py` must match the reason values listed in the SKILL.md moment detection prompt. If you add a new reason type to the prompt (e.g., `topic_transition`, `key_argument`), you MUST also add it to the enum or Pydantic will raise `ValidationError`. Currently valid: `proper_noun`, `claim`, `deictic`, `speaker_id`, `visual_context`, `entity`, `topic_transition`, `key_argument`, `unknown`.
+
 ## Troubleshooting
 
 | Problem | Fix | Details |
@@ -644,6 +765,7 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 | YouTube 2026 deps missing | deno + curl_cffi required | [youtube-2026-download-requirements.md](references/youtube-2026-download-requirements.md) |
 | Setup preflight failed (exit 2) | Missing binaries — run installer | `python3 "${SKILL_DIR}/scripts/setup.py"` |
 | Frame extraction timeout (>30 min video) | Use `background=true` (Step 2) or `--detail efficient` | See "Pitfalls" section — background mode is primary fix |
+| Video download 403 in watch.py but manual yt-dlp works | Manually download + ffmpeg frames | See "Manual Download Fallback" below |
 | Whisper request failed | Check key or retry other provider | Error on stderr; try `--whisper openai` if Groq failed |
 | Download fails | Check stderr for yt-dlp error | Login-required/region-locked → tell user, don't retry |
 
@@ -653,7 +775,7 @@ Frames dominate token cost: 80 frames at 512px ≈ 50-80k image tokens. Transcri
 
 ## Security & Permissions
 
-Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or OpenAI) when captions are missing — never the video itself. Writes to `~/.config/watch/.env` (mode `0600`). Deletes downloaded video after processing. Does not share API keys between providers, log keys, or persist anything outside the working directory and `.env`. When Chrome cookies are auto-detected, `--cookies-from-browser` is passed for authenticated requests — no credentials are stored or transmitted.
+Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or OpenAI) when captions are missing — never the video itself. Writes to `~/.config/watch/.env` (mode `0600`). Deletes downloaded video after processing. Does not share API keys between providers, log keys, or persist anything outside the working directory and `.env`. Cookies are opt-in only (`--cookies` flag) — no browser credentials are accessed by default.
 
 ## Reference files (load on demand)
 
@@ -673,6 +795,8 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 - [JSON3 transcript-frame alignment](references/json3-transcript-frame-alignment.md) — word-level timing, LLM-driven moment detection, cross-referencing transcript with visual evidence
 - [Speaker diarization research](references/speaker-diarization-research.md) — WhisperX, pyannote, audio-visual diarization tools, practical recommendations
 - [Analysis stats output](references/analysis-stats-output.md) — --stats flag, Telegram/compact formats, stats.json structure
+- [Optimization benchmarks](references/optimization-benchmarks-2026-07.md) — fps downsampling, hw accel, and transcript-first benchmarks (July 2026)
+- [Screenshot-first pipeline](references/screenshot-first-pipeline.md) — parallel section downloads, edge cases, implementation plan (July 2026)
 
 ## Bundled scripts
 
