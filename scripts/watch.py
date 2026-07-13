@@ -101,6 +101,12 @@ def main() -> int:
         help="Keep the downloaded video file after frame extraction (default: delete to save disk).",
     )
     ap.add_argument(
+        "--cookies",
+        action="store_true",
+        help="Use Chrome cookies for yt-dlp (opt-in). Breaks android_vr client — "
+             "only use for age-restricted or private videos.",
+    )
+    ap.add_argument(
         "--output",
         choices=["markdown", "json", "both"],
         default="both",
@@ -205,6 +211,7 @@ def main() -> int:
                 work / "download",
                 audio_only=audio_only,
                 existing_subtitle=existing_sub,
+                use_cookies=args.cookies,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)

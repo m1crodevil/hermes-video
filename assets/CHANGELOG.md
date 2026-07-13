@@ -2,6 +2,22 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.14.0] — 2026-07-13
+
+### Fixed
+- **YouTube video download 403: cookies breaking android_vr client.** `_yt_dlp_network_opts()` was passing `--cookies-from-browser chrome` by default, causing yt-dlp to skip `android_vr` (which doesn't support cookies) and fall back to `web_creator` which needs a GVS PO Token. Now cookies are OFF by default — `--cookies` is an opt-in flag. `android_vr` without cookies is the most reliable client for YouTube 2026+.
+- **Metadata/subtitle functions no longer inject network opts.** `fetch_metadata_only()` and `fetch_captions()` no longer call `_yt_dlp_network_opts()` — they work fine without cookies/impersonate, and adding them was causing the same android_vr skip issue during subtitle downloads.
+
+### Changed
+- `_yt_dlp_network_opts()` now accepts `use_cookies: bool = False` parameter. Cookies only added when explicitly requested.
+- `_common_yt_dlp_opts()` now accepts `use_cookies: bool = False` parameter.
+- `download_url()` and `download()` now accept `use_cookies: bool = False` parameter, passed through from `watch.py`.
+- `watch.py` gained `--cookies` flag (opt-in, documented as breaking android_vr).
+- SKILL.md: vision verification minimum raised from 8-15 to 21+ representative frames per video.
+- SKILL.md: "Cookies & Rate Limiting" section updated to reflect opt-in behavior.
+- SKILL.md: "Security & Permissions" section updated — no browser credentials accessed by default.
+- SKILL.md: Video download 403 pitfall updated with v1.14+ fix details.
+
 ## [1.13.0] — 2026-07-13
 
 ### Fixed

@@ -45,16 +45,21 @@ def _has_chrome_cookies() -> bool:
     return False
 
 
-def _yt_dlp_network_opts() -> list[str]:
+def _yt_dlp_network_opts(use_cookies: bool = False) -> list[str]:
     """Network-related yt-dlp flags for YouTube 2026+ reliability.
 
     YouTube now requires:
       1. A JS runtime (deno) for challenge solving during extraction
       2. Browser impersonation (curl_cffi) to avoid bot detection
-      3. Cookies (optional, only when deno is present for n-signature solving)
+      3. Cookies (OPTIONAL — breaks android_vr, only use when explicitly needed)
 
     Without these, metadata + subtitles may still work but video downloads
     fail with HTTP 403 Forbidden.
+
+    IMPORTANT: Do NOT pass --cookies-from-browser by default. It causes yt-dlp
+    to skip android_vr (which doesn't support cookies), forcing web_creator
+    which needs a GVS PO Token that we don't have. android_vr without cookies
+    is the most reliable approach for YouTube 2026+.
 
     Install: deno (curl -fsSL https://deno.land/install.sh | sh)
     Install: curl_cffi (pip install --break-system-packages curl-cffi)
@@ -62,7 +67,7 @@ def _yt_dlp_network_opts() -> list[str]:
     opts: list[str] = []
 
     # YouTube 2026+: android_vr player client bypasses JS challenge solving
-    # and works reliably without deno. web_creator is a fallback.
+    # and works reliably WITHOUT cookies. web_creator is a fallback.
     opts += ["--extractor-args", "youtube:player_client=android_vr,web_creator"]
 
     has_deno = shutil.which("deno") is not None
@@ -81,16 +86,17 @@ def _yt_dlp_network_opts() -> list[str]:
     except ImportError:
         pass
 
-    # Chrome cookies for authenticated sessions (only when deno is present)
-    if has_deno and _has_chrome_cookies():
+    # Chrome cookies: OPT-IN only. Pass use_cookies=True when needed
+    # (age-restricted videos, private/unlisted). Default: OFF.
+    if use_cookies and has_deno and _has_chrome_cookies():
         opts += ["--cookies-from-browser", "chrome"]
 
     return opts
 
 
-def _common_yt_dlp_opts(lang: str = "en.*") -> list[str]:
+def _common_yt_dlp_opts(lang: str = "en.*", use_cookies: bool = False) -> list[str]:
     """Shared yt-dlp flags for subtitle downloads."""
-    return [
+    opts = [
         "--write-subs",
         "--write-auto-subs",
         "--sub-langs", lang,
@@ -98,6 +104,10 @@ def _common_yt_dlp_opts(lang: str = "en.*") -> list[str]:
         "--ignore-errors",
         "--sleep-subtitles", SLEEP_SUBTITLES,
     ]
+    # Only add cookies when explicitly requested (opt-in, breaks android_vr)
+    if use_cookies and _has_chrome_cookies():
+        opts += ["--cookies-from-browser", "chrome"]
+    return opts
 
 
 
@@ -170,8 +180,8 @@ def fetch_metadata_only(url: str, out_dir: Path) -> dict:
         "--", url,
     ]
 
-    # YouTube 2026: impersonate + JS runtime for metadata extraction
-    cmd[1:1] = _yt_dlp_network_opts()
+    # No network opts needed: metadata works without cookies/impersonate.
+    # android_vr handles YouTube 2026+ challenges automatically.
 
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     return _read_info(out_dir / "video.info.json", url)
@@ -279,9 +289,9 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "-o", output_template,
         "--", url,
     ]
-    
-    # YouTube 2026: impersonate + JS runtime for subtitle extraction
-    cmd[1:1] = _yt_dlp_network_opts()
+
+    # No network opts needed for subtitles: android_vr handles extraction.
+    # Cookies are NOT used here — they break android_vr client selection.
 
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     subtitle = _pick_subtitle(out_dir, best_lang)
@@ -333,12 +343,15 @@ def download_url(
     out_dir: Path,
     audio_only: bool = False,
     existing_subtitle: str | None = None,
+    use_cookies: bool = False,
 ) -> dict:
     """Download video via yt-dlp.
 
     Args:
         existing_subtitle: If set, skip subtitle re-download (prevents 429).
             Pass the subtitle_path from fetch_captions() to avoid redundant requests.
+        use_cookies: If True, use Chrome cookies (opt-in, breaks android_vr).
+            Only use for age-restricted or private videos.
     """
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -363,11 +376,11 @@ def download_url(
         print("[watch] subtitle already fetched, skipping re-download", file=sys.stderr)
     else:
         print("[watch] downloading subtitles with video (first time)", file=sys.stderr)
-        cmd[1:1] = _common_yt_dlp_opts()
+        cmd[1:1] = _common_yt_dlp_opts(use_cookies=use_cookies)
         cmd[1:1] = ["--sub-format", "json3/best"]
 
-    # YouTube 2026: impersonate + JS runtime + cookies for video download
-    cmd[1:1] = _yt_dlp_network_opts()
+    # YouTube 2026: android_vr (no cookies) is most reliable for video download
+    cmd[1:1] = _yt_dlp_network_opts(use_cookies=use_cookies)
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
@@ -394,12 +407,14 @@ def download(
     out_dir: Path,
     audio_only: bool = False,
     existing_subtitle: str | None = None,
+    use_cookies: bool = False,
 ) -> dict:
     if is_url(source):
         return download_url(
             source, out_dir,
             audio_only=audio_only,
             existing_subtitle=existing_subtitle,
+            use_cookies=use_cookies,
         )
     return resolve_local(source)
 
