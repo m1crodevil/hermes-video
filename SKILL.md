@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.13.0"
+version: "1.14.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -111,7 +111,7 @@ When captions are available, this is the **fastest and most accurate** approach:
   - Or: use `background=true` for the re-run
 - [ ] Step 2d: Collect metadata + stats from work dir (**MANDATORY**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
-- [ ] Step 4: `vision_analyze` 8-15 representative frames (from the 50+ extracted)
+- [ ] Step 4: `vision_analyze` 21+ representative frames (from the 50+ extracted)
 - [ ] Step 5: Answer user (specific question OR summarize)
 - [ ] Step 6: Handle follow-ups from context, cleanup
 
@@ -127,7 +127,7 @@ For videos **without captions** or when visual coverage is needed:
 - [ ] Step 2b: Wait for completion (**background mode only** — `process(action='wait')`)
 - [ ] Step 2c: Collect metadata + stats from work dir (**MANDATORY — always, even on timeout**)
 - [ ] Step 3: Check transcript → if missing, offer Whisper
-- [ ] Step 4: `vision_analyze` 8-15 representative frames
+- [ ] Step 4: `vision_analyze` 21+ representative frames
 - [ ] Step 5: Answer user (specific question OR summarize)
 - [ ] Step 6: Handle follow-ups from context, cleanup
 
@@ -235,6 +235,7 @@ Optional flags:
 - `--no-whisper` — disable Whisper fallback entirely
 - `--no-dedup` — keep near-duplicate frames (usually dropped to save budget)
 - `--keep-video` — retain downloaded video after frame extraction (default: auto-deleted)
+- `--cookies` — use Chrome cookies for yt-dlp (opt-in). Breaks android_vr client — only use for age-restricted or private videos. Default: OFF (android_vr without cookies is most reliable).
 - `--auto-moments` — generate LLM prompt for key moment detection from transcript (see "LLM-Driven Moment Detection" below)
 - `--max-moments N` — maximum key moments to identify (default 15, used with `--auto-moments`)
 - `--min-moments N` — minimum moments for transcript-moments mode (default 50)
@@ -273,7 +274,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 **Step 4 — view frames.** The script outputs JPEG frame paths.
 
-**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change engines name files by extraction index (`frame_0211.jpg`), not timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first, then pick 8-15 representative frames spread across the list for `vision_analyze`.
+**Pitfall: frame filenames are NOT sequential from 0001.** Scene-change engines name files by extraction index (`frame_0211.jpg`), not timestamp. Do NOT guess filenames. Always `search_files("*.jpg", path="<workdir>/frames", target="files")` first, then pick 21+ representative frames spread across the list for `vision_analyze`.
 
 **Pitfall:** `read_file` cannot handle binary images. Use `vision_analyze` instead:
 
@@ -281,7 +282,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 vision_analyze(image_url="/tmp/watch-XXXX/frames/frame_0001.jpg", question="What is shown in this frame?")
 ```
 
-For 50+ frames, sample 8-15 representative frames evenly rather than loading all — vision calls are expensive.
+For 50+ frames, sample 21+ representative frames evenly rather than loading all — vision calls are expensive but thorough coverage is mandatory.
 
 **Step 5 — answer the user.** You now have two streams of evidence:
 - **Frames** — what's on screen at each timestamp
@@ -598,7 +599,7 @@ See [json3-transcript-frame-alignment.md](references/json3-transcript-frame-alig
 
 ## Cookies & Rate Limiting
 
-YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download, browser cookies (`--cookies-from-browser chrome` auto-detected), and sleep intervals (`--sleep-subtitles 3`). For best reliability, log in to YouTube in Chrome. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
+YouTube aggressively rate-limits subtitle downloads (HTTP 429). The script mitigates with: skip re-download and sleep intervals (`--sleep-subtitles 3`). As of v1.14+, cookies are **opt-in** (`--cookies` flag) — they break the `android_vr` client which is the most reliable for YouTube 2026+. Only use cookies for age-restricted or private videos. See [youtube-429-rate-limit.md](references/youtube-429-rate-limit.md) for workarounds.
 
 ## Video cleanup and disk usage
 
@@ -632,14 +633,16 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 **Multi-speaker videos require visual context for speaker identification.** Auto-captions do not label who is speaking. In Discord calls, podcasts, or interviews, the transcript alone cannot distinguish speakers. Always check frames for Discord UI (participant names), streamer facecam, or game UI (player names) to attribute quotes correctly.
 
-**Video download 403 in watch.py but manual yt-dlp works.** Sometimes `download.py` gets HTTP 403 on the video stream even though deno + curl_cffi are installed and `setup.py --json` reports ready. The watch script's format string (`bv*[height<=720]+ba/b[height<=720]/bv+ba/b`) triggers yt-dlp to select a different player API (e.g., `tv downgraded`) than a manual command which defaults to `android_vr`. The `android_vr` client works without JS challenge solving — it's the most reliable fallback for YouTube 2026+.
+**Video download 403 in watch.py but manual yt-dlp works.** As of v1.14+, cookies are OFF by default (`--cookies` is opt-in). The most common cause was `--cookies-from-browser chrome` causing yt-dlp to skip `android_vr` (which doesn't support cookies), forcing `web_creator` which needs a GVS PO Token. With cookies off, `android_vr` is used by default and is the most reliable client for YouTube 2026+.
 
-**Root cause diagnosis:** Run `yt-dlp -v --skip-download --dump-json "<URL>" 2>&1 | grep "player API"` to see which client is selected. If it shows `tv downgraded` but `android_vr` works manually, the format string is the trigger.
+If you still see 403, check: (1) is `--cookies` passed? If so, remove it unless needed. (2) Is deno installed? Run `setup.py --json` to verify. (3) Try manual fallback below.
+
+**Root cause diagnosis:** Run `yt-dlp -v --skip-download --dump-json "<URL>" 2>&1 | grep "player API"` to see which client is selected. If it shows `android_vr` → good. If it shows `tv downgraded` or `web_creator` → something is overriding the default.
 
 **Fix options (pick one):**
 
 **Option A — Quick manual fallback:**
-1. Download manually: `yt-dlp --impersonate chrome --js-runtimes deno -f "bestvideo[height<=720]+bestaudio/best[height<=720]" -o "<workdir>/download/video.mp4" "<URL>"`
+1. Download manually: `yt-dlp --no-cookies-from-browser -f "134+140" --merge-output-format mp4 -o "<workdir>/download/video.mp4" "<URL>"`
 2. The file may end up as `.mp4.webm` (merged format) — this is fine for ffmpeg
 3. Extract frames at moment timestamps using ffmpeg directly:
    ```bash
@@ -649,7 +652,7 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 5. Clean up: `rm -f <workdir>/download/video.*`
 
 **Option B — Patch download.py (persistent fix):**
-Add `--extractor-args "youtube:player_client=android_vr,web"` to `_yt_dlp_network_opts()` in `scripts/download.py`. This forces yt-dlp to use `android_vr` client which bypasses JS challenge solving entirely. The `web` client is fallback for videos where `android_vr` doesn't have the requested format.
+Already fixed in v1.14+: `_yt_dlp_network_opts()` no longer adds `--cookies-from-browser` by default. If you're on an older version, add `--extractor-args "youtube:player_client=android_vr,web"` to `_yt_dlp_network_opts()` in `scripts/download.py`.
 
 **`.mp4.webm` extension issue.** When video (mp4) + audio (webm/opus) are merged, yt-dlp outputs `.mp4.webm` instead of `.mp4`. `_pick_video()` in download.py handles `.webm` extension, so this is cosmetic — ffmpeg reads it fine. But downstream code expecting `.mp4` may fail. Fix: rename after download or update `_pick_video()` glob to include `.mp4.webm`.
 
@@ -677,7 +680,7 @@ Frames dominate token cost: 80 frames at 512px ≈ 50-80k image tokens. Transcri
 
 ## Security & Permissions
 
-Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or OpenAI) when captions are missing — never the video itself. Writes to `~/.config/watch/.env` (mode `0600`). Deletes downloaded video after processing. Does not share API keys between providers, log keys, or persist anything outside the working directory and `.env`. When Chrome cookies are auto-detected, `--cookies-from-browser` is passed for authenticated requests — no credentials are stored or transmitted.
+Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or OpenAI) when captions are missing — never the video itself. Writes to `~/.config/watch/.env` (mode `0600`). Deletes downloaded video after processing. Does not share API keys between providers, log keys, or persist anything outside the working directory and `.env`. Cookies are opt-in only (`--cookies` flag) — no browser credentials are accessed by default.
 
 ## Reference files (load on demand)
 
