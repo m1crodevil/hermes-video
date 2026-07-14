@@ -11,16 +11,18 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 
 - 🎬 **Frame extraction** — adaptive scene-aware or keyframe-only, with deduplication
 - 📝 **Transcript** — JSON3 captions (free, word-level timing) → Whisper API fallback
-- 🔍 **Detail modes** — `transcript` | `efficient` | `balanced` | `token-burner`
+- 🔍 **Detail modes** — `screenshot-first` | `transcript` | `transcript-moments` | `efficient` | `balanced` | `token-burner`
 - 🎯 **Focus mode** — `--start`/`--end` for dense frames on a specific section
 - ⏱️ **Transcript-cue frames** — `--timestamps` for moments the speaker flags
 - 🧹 **Auto-cleanup** — downloaded video deleted after processing (saves 200MB–1GB)
-- 🍪 **Auto cookies** — detects Chrome/Chromium for YouTube auth
+- 🍪 **Opt-in cookies** — `--cookies` flag for age-restricted/private videos (default OFF; breaks android_vr)
 - 📊 **Structured output** — Pydantic models, JSON + markdown reports
 - 🎯 **Adaptive thresholds** — scene detection auto-tunes based on video duration
 - 📏 **Gap-filling** — uniform frames inserted in large gaps for consistent coverage
 - ✅ **Minimum density guarantee** — at least 1 frame per 60s for videos >10 min
 - 📊 **Mandatory stats** — stats always included in deliverable, even on timeout (agent-collected from raw files)
+- 🎯 **LLM-driven moment detection** — `--auto-moments` generates prompts for transcript-frame alignment
+- 📐 **Transcript-cue extraction** — `--timestamps` extracts frames at speaker-flagged moments
 
 ## 📦 Prerequisites
 
@@ -115,7 +117,7 @@ Edit `~/.config/watch/.env`:
 # Add your API key (only needed for videos without captions)
 GROQ_API_KEY=gsk_your_key_here
 # or
-OPENAI_API_KEY=sk-your_key_here
+OPENAI_API_KEY=«redacted:sk-…»
 ```
 
 ### Configure default detail mode (optional)
@@ -146,6 +148,12 @@ python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123"
 # Transcript only (no frames, no video download)
 python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail transcript
 
+# Screenshot-first (fastest for long videos with captions)
+python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail screenshot-first
+
+# Transcript-moments (LLM-driven moment detection + frame extraction)
+python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail transcript-moments --min-moments 50
+
 # Focus on a section (denser frames)
 python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --start 2:00 --end 5:00
 
@@ -158,12 +166,23 @@ python3 "${SKILL_DIR}/scripts/watch.py" /path/to/video.mp4
 
 ## 📊 Detail Modes
 
-| Mode | Frames | Best for | Token cost |
-|------|--------|----------|------------|
-| `transcript` | 0 (transcript only) | Long videos, quick answers | ~5K |
-| `efficient` | ≤50 keyframes | Fast overview | ~30K |
-| `balanced` | ≤100 scene-aware | Most use cases (default) | ~60K |
-| `token-burner` | uncapped | Maximum fidelity | ~100K+ |
+| Mode | Frames | Speed (58 min) | Best for | Token cost |
+|------|--------|----------------|----------|------------|
+| `screenshot-first` | LLM-driven timestamps | ~35s | **PRIMARY** — long videos with captions | ~30K |
+| `transcript` | 0 (transcript only) | ~5s | Long videos, quick answers | ~5K |
+| `transcript-moments` | 50+ moment frames | ~60s | Deep transcript analysis | ~50K |
+| `efficient` | ≤50 keyframes | ~10-20s | Fast overview | ~30K |
+| `balanced` | ≤100 scene-aware | ~300s | Most use cases | ~60K |
+| `token-burner` | uncapped | ~500s+ | Maximum fidelity | ~100K+ |
+
+### When to use each mode
+
+- **`screenshot-first`** — Videos >10 min with captions. Downloads only 2-second sections at LLM-identified timestamps (10x faster than full download).
+- **`transcript`** — Dialogue-heavy content where transcript is primary evidence. No video download when captions exist.
+- **`transcript-moments`** — Need both transcript AND visual verification at key moments. Generates 50+ moment frames.
+- **`efficient`** — Quick visual overview without scene detection overhead. Keyframe extraction only.
+- **`balanced`** — Default mode. Scene-aware frame selection with adaptive thresholds.
+- **`token-burner`** — Maximum visual fidelity. Two-pass extraction (scene detection + uniform sampling).
 
 ## 🔧 Troubleshooting
 
@@ -217,18 +236,49 @@ skills/watch/
 │   └── CHANGELOG.md      # Version history
 ├── references/           # Detailed guides and pitfall docs
 ├── scripts/
-│   ├── watch.py          # Entry point
-│   ├── download.py       # yt-dlp wrapper (subs + video)
-│   ├── frames.py         # ffmpeg frame extraction
-│   ├── transcribe.py     # Caption selection + Whisper orchestration
-│   ├── whisper.py        # Groq / OpenAI Whisper clients
-│   ├── language.py       # Auto-detect video language for subs
-│   ├── config.py         # Config reader (~/.config/watch/.env)
-│   ├── models.py         # Pydantic output models
-│   └── setup.py          # Preflight + installer
+│   ├── watch.py              # Entry point
+│   ├── download.py           # yt-dlp wrapper (subs + video)
+│   ├── frames.py             # ffmpeg frame extraction
+│   ├── transcribe.py         # Caption selection + Whisper orchestration
+│   ├── whisper.py            # Groq / OpenAI Whisper clients
+│   ├── language.py           # Auto-detect video language for subs
+│   ├── config.py             # Config reader (~/.config/watch/.env)
+│   ├── models.py             # Pydantic output models
+│   ├── setup.py              # Preflight + installer
+│   ├── transcript_moments.py # LLM-driven moment detection from transcript
+│   ├── extract_moment_frames.py # Extract frames at moment timestamps
+│   ├── batch_vision.py       # Batch vision prompts for verification
+│   ├── apply_corrections.py  # Apply corrections to transcript
+│   ├── vision_verify.py      # Vision verification workflow
+│   ├── synthesis.py          # Grounded synthesis prompts
+│   ├── stats_collector.py    # Analysis stats collection
+│   └── build-skill.sh        # Build claude.ai upload bundle
 ├── templates/            # Report templates
 └── tests/                # pytest suite
 ```
+
+## 🔧 Available Flags
+
+| Flag | Description |
+|------|-------------|
+| `--detail MODE` | Fidelity/speed dial: `screenshot-first`, `transcript`, `transcript-moments`, `efficient`, `balanced`, `token-burner` |
+| `--start T` / `--end T` | Focus on a time range (SS, MM:SS, or HH:MM:SS) |
+| `--timestamps T1,T2,...` | Extract frames at specific absolute timestamps |
+| `--max-frames N` | Override the frame cap |
+| `--resolution W` | Frame width in pixels (default 512) |
+| `--fps F` | Override auto-fps (clamped to 2 fps max) |
+| `--out-dir DIR` | Working directory (default: auto-generated tmp) |
+| `--output FORMAT` | Output format: `markdown`, `json`, or `both` (default) |
+| `--whisper BACKEND` | Force Whisper backend: `groq` or `openai` |
+| `--no-whisper` | Disable Whisper fallback entirely |
+| `--no-dedup` | Keep near-duplicate frames |
+| `--keep-video` | Retain downloaded video after extraction |
+| `--cookies` | Use Chrome cookies (opt-in; breaks android_vr) |
+| `--auto-moments` | Generate LLM prompt for key moment detection |
+| `--max-moments N` | Maximum key moments (default 15, with `--auto-moments`) |
+| `--min-moments N` | Minimum moments for transcript-moments mode |
+| `--stats` | Include analysis stats in output |
+| `--stats-format FORMAT` | Stats format: `telegram` or `compact` |
 
 ## 🔒 Security
 
