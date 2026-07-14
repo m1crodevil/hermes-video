@@ -38,10 +38,10 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 ## How It Works
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports -- YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
-2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
-3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Hermes Read compatibility.
+2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. `screenshot-first` (default for long videos with captions) downloads only 2-second sections at LLM-identified timestamps -- 10x faster and 99% less data than full download. For other modes, or when Whisper needs audio, it downloads only what the run needs.
+3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (`-skip_frame nokey`, near-instant); `balanced`/`token-burner` use scene-change detection with **adaptive thresholds** -- lower for long videos (0.12 at 60+ min), higher for short clips (0.25 at ≤1 min). Large gaps between scenes are filled with uniformly-sampled frames to ensure minimum coverage. JPEGs are 512px wide by default and clamped to 1998px tall for Hermes Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip and ship it to Whisper -- Groq's `whisper-large-v3` (preferred) or OpenAI's `whisper-1`.
-5. **Frames + transcript are handed to Hermes.** The script builds a validated Pydantic `WatchReport` model from all pipeline data -- metadata, frames with timestamps and reasons, transcript segments with word-level timing.
+5. **Frames + transcript are handed to Hermes.** The script builds a validated Pydantic `WatchReport` model from all pipeline data -- metadata, frames with timestamps and reasons, transcript segments (with word-level timing when available from JSON3 captions).
 6. **Optional: LLM-driven moment detection.** With `--auto-moments`, the transcript is analyzed to identify moments needing visual verification -- proper nouns, claims, deictic references, speaker identity clues. Frames are extracted at those exact timestamps.
 7. **Optional: Batch vision verification.** The agent analyzes key frames with specific questions (not generic "what is shown?"), corrects misspelled names, validates claims, and identifies speakers from visual cues.
 8. **Hermes answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It verified the facts.
@@ -70,9 +70,11 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 
 | Mode | Speed | Frames | Best For |
 |------|-------|--------|----------|
+| `screenshot-first` | ~30s | LLM-driven | **Long videos with captions** (default for URLs) |
+| `transcript-moments` | ~15s | 50+ | Transcript + visual verification at key moments |
 | `transcript` | Fastest | 0 | Transcript-only, no video download |
 | `efficient` | ~0.5s | 50 | Quick scan, keyframes only |
-| `balanced` | ~20s | 100 | General analysis (default) |
+| `balanced` | ~20s | 100 | General analysis (default for local files) |
 | `token-burner` | ~21s | Uncapped | Full visual coverage |
 
 ```
@@ -82,7 +84,6 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 /watch https://youtu.be/abc --detail token-burner  # uncapped
 ```
 
-**Other options:**
 **Other options:**
 | Flag | Description |
 |------|-------------|
@@ -98,6 +99,10 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 | `--out-dir DIR` | Custom working directory |
 | `--auto-moments` | LLM-driven moment detection for visual verification |
 | `--max-moments N` | Max key moments to identify (default 15) |
+| `--min-moments N` | Min key moments for transcript-moments mode (default 50) |
+| `--cookies` | Use Chrome cookies for yt-dlp (age-restricted videos only) |
+| `--stats` | Include analysis stats in output |
+| `--stats-format telegram\|compact` | Stats output format (default: telegram) |
 
 ---
 
@@ -154,95 +159,6 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) | ~$0.04/hr |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) | Standard pricing |
 | Disable Whisper | `--no-whisper` | Free, frames-only |
-
----
-
-## Structured Output
-
-Every run produces a validated Pydantic `WatchReport` model. Two output modes:
-
-**Markdown** (default) -- structured report with metadata table, frame timeline, and timestamped transcript. Human-readable, renders well in Telegram/Slack.
-Every run produces a validated Pydantic `WatchReport` model. Two output modes:
-**Markdown** (default) -- structured report with metadata table, frame timeline, and timestamped transcript. Human-readable, renders well in Telegram/Slack.
-**JSON** (`--output json` or `--output both`) -- machine-readable, ready for downstream pipelines.
-```json
-{
-  "metadata": {
-    "source": "https://youtu.be/...",
-    "title": "Video Title",
-    "duration": 120.0,
-    "duration_fmt": "02:00",
-    "resolution": "1280x720"
-  },
-  "frames": [
-    {
-      "path": "/tmp/watch-xxx/frames/frame_0001.jpg",
-      "timestamp": 10.0,
-      "timestamp_fmt": "00:10",
-      "reason": "scene-change"
-    }
-  ],
-  "transcript_segments": [
-    {
-      "start": 10.0,
-      "end": 12.0,
-      "text": "spoken text here",
-      "words": [
-        {"word": "spoken", "start": 10.0, "confidence": 0.95}
-      ]
-    }
-  ],
-  "key_moments": [
-    {
-      "timestamp": 54.0,
-      "timestamp_fmt": "0:54",
-      "word": "Raknarok",
-      "context": "Ya kan Ragnarok. Tahu Raknarok?",
-      "reason": "proper_noun",
-      "question": "What game name is displayed on screen?",
-      "priority": 1,
-      "vision_result": "Ragnarok Online",
-      "correction": "Ragnarok"
-    }
-  ]
-}
-```
-Models: `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegment`, `WordTiming`, `FocusRange`, `KeyMoment`, `KeyMomentStats`, `MomentReason` -- defined in `scripts/models.py`.
-Models: `WatchReport`, `VideoMetadata`, `Frame`, `FrameStats`, `TranscriptSegment`, `WordTiming`, `FocusRange` -- defined in `scripts/models.py`.
-
----
-
-## Project Structure
-
-```
-.
-├── skills/watch/
-│   ├── SKILL.md                  # skill contract
-│   ├── assets/
-│   │   ├── README.md             # skill-specific README
-│   │   └── CHANGELOG.md          # version history
-│   └── scripts/
-│       ├── watch.py              # entry point
-│       ├── models.py             # Pydantic models
-│       ├── download.py           # yt-dlp wrapper
-│       ├── frames.py             # ffmpeg frame extraction
-│       ├── transcribe.py         # caption parsing + Whisper
-│       ├── whisper.py            # Groq / OpenAI clients
-│       ├── language.py           # subtitle language detection
-│       ├── config.py             # shared config
-│       └── setup.py              # preflight + installer
-│       ├── transcript_moments.py # LLM-driven moment detection
-│       ├── extract_moment_frames.py # Auto-extract frames at timestamps
-│       ├── batch_vision.py       # Batch vision analysis
-│       ├── apply_corrections.py  # Auto-apply transcript corrections
-│       ├── vision_verify.py      # Vision verification workflow
-│       └── synthesis.py          # Grounded synthesis prompts
-├── tests/
-│   └── test_models.py            # 30 unit tests
-├── install.sh                    # install script
-└── LICENSE                       # MIT
-```
-
 ---
 
 ## Development
