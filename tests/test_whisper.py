@@ -4,14 +4,10 @@ from __future__ import annotations
 import math
 import subprocess
 from pathlib import Path
-
 import pytest
-
-import whisper
-
+from watch import whisper
 
 MB = 1024 * 1024
-
 
 class TestPlanChunks:
     def test_under_limit_is_single_chunk(self):

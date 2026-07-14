@@ -10,16 +10,11 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-import download  # noqa: E402
+from watch import download
 
 URL = "https://www.youtube.com/watch?v=rlOpbu3Enkw"
-
 
 def _capture_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Stub subprocess.run inside download.py and record every argv."""
@@ -52,7 +47,10 @@ def _assert_english_only(langs: str) -> None:
 def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    # The call with --sub-langs is the 3rd subprocess call (after metadata + list_subs)
+    sub_lang_calls = [c for c in calls if "--sub-langs" in c]
+    assert sub_lang_calls, "expected at least one subprocess call with --sub-langs"
+    _assert_english_only(_sub_langs(sub_lang_calls[0]))
 
 
 def test_download_url_requests_english_only(monkeypatch, tmp_path):

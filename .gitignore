@@ -50,6 +50,7 @@ watch-*/
 # Claude Video specific
 download/
 frames/
+!src/watch/frames/
 audio.mp3
 audio.wav
 
