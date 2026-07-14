@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import frames
+from watch import frames
 
 
 def test_keyframe_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):

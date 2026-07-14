@@ -1,7 +1,7 @@
 """WATCH_DETAIL resolution, frame_cap mapping, and load_config."""
 from __future__ import annotations
 
-import config
+from watch import config
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ def test_get_config_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("WATCH_DETAIL", raising=False)
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.get_config()
-    assert set(cfg) == {"detail", "config_file"}
+    assert set(cfg) == {"detail", "config_file", "min_moments"}
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,7 @@ def test_frame_cap_mapping():
 def test_load_config_returns_watch_config(monkeypatch, tmp_path):
     monkeypatch.delenv("WATCH_DETAIL", raising=False)
     monkeypatch.setattr(config, "DEFAULT_CONFIG_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.load_config("https://example.com/video.mp4")
     assert isinstance(cfg, config.WatchConfig)
     assert cfg.source == "https://example.com/video.mp4"
@@ -60,6 +61,7 @@ def test_load_config_returns_watch_config(monkeypatch, tmp_path):
 
 def test_load_config_env_detail(monkeypatch, tmp_path):
     monkeypatch.setenv("WATCH_DETAIL", "efficient")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     monkeypatch.setattr(config, "DEFAULT_CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.load_config("https://example.com/video.mp4")
     assert cfg.detail == "efficient"
@@ -68,6 +70,7 @@ def test_load_config_env_detail(monkeypatch, tmp_path):
 
 def test_load_config_explicit_detail_overrides_env(monkeypatch, tmp_path):
     monkeypatch.setenv("WATCH_DETAIL", "efficient")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     monkeypatch.setattr(config, "DEFAULT_CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.load_config("src", detail="balanced")
     assert cfg.detail == "balanced"
@@ -76,6 +79,7 @@ def test_load_config_explicit_detail_overrides_env(monkeypatch, tmp_path):
 
 def test_load_config_invalid_detail_falls_back(monkeypatch, tmp_path):
     monkeypatch.delenv("WATCH_DETAIL", raising=False)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     monkeypatch.setattr(config, "DEFAULT_CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.load_config("src", detail="bogus")
     assert cfg.detail == "balanced"
@@ -83,6 +87,7 @@ def test_load_config_invalid_detail_falls_back(monkeypatch, tmp_path):
 
 def test_load_config_token_burner_unlimited(monkeypatch, tmp_path):
     monkeypatch.delenv("WATCH_DETAIL", raising=False)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     monkeypatch.setattr(config, "DEFAULT_CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.load_config("src", detail="token-burner")
     assert cfg.max_frames is None

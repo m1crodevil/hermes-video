@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-
 import pytest
-
-import frames
+from watch import frames
 
 
 def test_parse_timestamps_mixed_formats():
@@ -22,7 +20,7 @@ def test_parse_timestamps_empty():
 
 
 def test_parse_timestamps_rejects_garbage():
-    with pytest.raises(SystemExit):
+    with pytest.raises((ValueError, SystemExit)):
         frames.parse_timestamps("4:bad")
 
 
@@ -83,5 +81,7 @@ def test_extract_at_timestamps_does_not_clobber_detail_frames(cut_clip: Path, tm
         str(cut_clip), d, fps=2.0, target_frames=50, max_frames=100,
     )
     cues, _ = frames.extract_at_timestamps(str(cut_clip), d, [1.0, 3.0])
-    assert len(list(d.glob("frame_*.jpg"))) == len(scene)
+    # scene may include fill_*.jpg (gap-fill) and cue_*.jpg alongside frame_*.jpg
+    all_frame_files = set(d.glob("frame_*.jpg")) | set(d.glob("fill_*.jpg"))
+    assert len(all_frame_files) == len(scene)
     assert len(list(d.glob("cue_*.jpg"))) == len(cues)

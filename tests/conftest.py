@@ -9,46 +9,10 @@ Best practices from pytest documentation:
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from typing import Generator
 
 import pytest
-
-# Make scripts importable (mirrors watch.py's sys.path insert).
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-# Set up scripts as a proper package so relative imports work
-# (env.py, opencode_client.py use "from .errors import ...").
-import types as _builtin_types  # avoid shadowing by scripts.types
-import importlib
-import importlib.util
-
-def _init_scripts_package() -> None:
-    """Bootstrap the scripts package into sys.modules for test imports."""
-    pkg_name = "scripts"
-    if pkg_name in sys.modules and hasattr(sys.modules[pkg_name], "__path__"):
-        return  # already initialised
-
-    # Create the package module
-    pkg = _builtin_types.ModuleType(pkg_name)
-    pkg.__path__ = [str(SCRIPTS_DIR)]
-    pkg.__package__ = pkg_name
-    sys.modules[pkg_name] = pkg
-
-    # Load errors first (no relative imports of its own)
-    errors_spec = importlib.util.spec_from_file_location(
-        f"{pkg_name}.errors", str(SCRIPTS_DIR / "errors.py"),
-        submodule_search_locations=[],
-    )
-    errors_mod = importlib.util.module_from_spec(errors_spec)
-    errors_mod.__package__ = pkg_name
-    sys.modules[f"{pkg_name}.errors"] = errors_mod
-    errors_spec.loader.exec_module(errors_mod)
-    pkg.errors = errors_mod
-
-_init_scripts_package()
 
 # 14 visually distinct fills → 14 abrupt cuts → x264 emits a keyframe per cut.
 COLORS = [

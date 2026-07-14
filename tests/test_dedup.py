@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import frames
-
+from watch import frames
 
 # --- _frame_delta: mean absolute per-pixel difference ------------------------
 
@@ -24,7 +22,6 @@ def test_frame_delta_mismatched_length_is_infinite():
 
 
 # --- _dedupe_by_deltas: greedy drop vs last *kept* thumbnail ------------------
-
 def _touch(dirpath: Path, n: int) -> list[dict]:
     dirpath.mkdir(parents=True, exist_ok=True)
     out = []
@@ -34,10 +31,8 @@ def _touch(dirpath: Path, n: int) -> list[dict]:
         out.append({"index": i, "timestamp_seconds": float(i), "path": str(p), "reason": "scene-change"})
     return out
 
-
 FLAT0 = bytes([0, 0, 0, 0])
 FLAT255 = bytes([255, 255, 255, 255])
-
 
 def test_dedupe_collapses_identical_run(tmp_path: Path):
     cands = _touch(tmp_path, 5)
@@ -130,7 +125,8 @@ def test_scene_engine_reports_zero_dedup_on_distinct(cut_clip: Path, tmp_path: P
     )
     assert meta["engine"] == "scene"
     assert meta["deduped_count"] == 0
-    assert len(out) == len(list((tmp_path / "f").glob("frame_*.jpg")))
+    all_frame_files = set((tmp_path / "f").glob("frame_*.jpg")) | set((tmp_path / "f").glob("fill_*.jpg"))
+    assert len(out) == len(all_frame_files)
 
 
 def test_uniform_fallback_dedupes_static(static_clip: Path, tmp_path: Path):
