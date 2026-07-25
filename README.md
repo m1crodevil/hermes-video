@@ -1,16 +1,16 @@
-# /watch — Video Analysis for AI Agents
+# /watch — Comprehensive Video Analysis for AI Agents
 
-> **Zero-config video analysis for AI agents.** Paste a URL, get grounded answers from frames + transcript.
+> **Transcript-driven, agent-selected, full-coverage video analysis.** Paste a URL, get a thorough article-quality review.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Hermes Agent](https://img.shields.io/badge/Hermes-Agent-purple)](https://hermes-agent.nousresearch.com)
 [![GitHub stars](https://img.shields.io/github/stars/m1crodevil/hermes-video)](https://github.com/m1crodevil/hermes-video/stargazers)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/m1crodevil/hermes-video/releases)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/m1crodevil/hermes-video/releases)
 
 **Works with:** Hermes Agent · Claude Code · Codex · Cursor · Any AI agent that reads files
 
-Paste a URL or a local path. `/watch` fetches captions, downloads the video, extracts frames at agent-selected timestamps, and delivers a structured report. The agent reads `report.json`, selects key moments, and analyzes what's actually on screen and in the audio.
+`/watch` delivers **comprehensive analysis** — not just frames and transcript, but a thorough review like reading a detailed article. The agent reads the full transcript, selects 21+ key moments using 8 selection criteria, extracts frames at those timestamps, and analyzes every single frame. The result: specific data, key arguments, important quotes, and clear conclusions.
 
 Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
 
@@ -39,53 +39,64 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 
 ## What People Use It For
 
-**Analyze someone else's content.** `/watch https://youtu.be/abc what hook did they open with?`
+**Deep-dive analysis.** `/watch https://youtu.be/abc analyze this comprehensively`
 
-**Diagnose a bug from a video.** `/watch bug-repro.mov what's going wrong?`
+**Research someone's arguments.** `/watch https://youtu.be/abc what are their main points and conclusions?`
 
-**Summarize a video.** `/watch https://youtu.be/abc summarize this`
+**Fact-check claims.** `/watch https://youtu.be/abc what statistics and data do they cite?`
 
-**Catch what captions get wrong.** `/watch https://youtu.be/abc are any names misspelled in the captions?`
+**Understand context.** `/watch https://youtu.be/abc what's the historical/political background?`
 
 ---
 
 ## How It Works
 
-`/watch` runs a **single linear pipeline** — no mode branching, no configuration trees:
+`/watch` runs a **two-pass workflow** — transcript first, then targeted frame extraction:
 
 ```
 Video URL / local path
     ↓
-1. Fetch captions via yt-dlp (JSON3 preferred)
+Pass 1: Transcript + Metadata (no video download)
+    ├── Fetch captions via yt-dlp (JSON3 preferred)
+    ├── Parse transcript with word-level timing
+    ├── Whisper fallback (if no captions, API key available)
+    └── Write report.json with full transcript
     ↓
-2. Download video (720p) if frames needed
+Pass 2: Agent-Driven Moment Selection
+    ├── Agent reads FULL transcript (mandatory)
+    ├── Selects 21+ key moments using 8 criteria
+    ├── Writes key_moments.json
+    └── Re-run with --timestamps → extract frames
     ↓
-3. Parse transcript from best-matching subtitle
+Pass 3: Comprehensive Analysis
+    ├── Vision analyze EVERY frame (no skipping)
+    ├── Cross-reference transcript × visuals × metadata
+    ├── Identify ASR errors, speaker identity, visual context
+    └── Generate article-quality analysis
     ↓
-4. Whisper fallback (if no captions, API key available)
-    ↓
-5. Agent reads report.json → selects key moments
-    ↓
-6. Re-run with --timestamps → extract frames at those moments
-    ↓
-7. Agent vision-analyzes frames, cross-references transcript
-    ↓
-8. Cleanup video file (save disk space)
+Cleanup video file (save disk space)
 ```
 
-The binary handles data extraction only. All intelligence (moment selection, analysis, cross-referencing) is handled by the agent.
+**Why two passes?** Pass 1 provides the full transcript for intelligent moment selection. Pass 2 extracts frames only at agent-selected moments — targeted at proper nouns, claims, deictic references, and topic changes. No wasted frames, no blind spots.
 
 ---
 
-## Cross-Reference Methodology
+## Moment Selection Criteria
 
-Every vision finding is classified:
+The agent selects key moments using **8 mandatory criteria**:
 
-- ✅ **confirmed** — vision matches transcript
-- 🔧 **corrected** — vision shows different spelling/entity
-- ❓ **fabrication** — claim has no visual evidence
-- ⚠️ **unverified** — cannot determine from visual alone
-- 🔸 **partial** — partially shown on screen
+| # | Criteria | What to look for |
+|---|----------|------------------|
+| 1 | **Proper nouns** | Names, brands, titles that might be misspelled in auto-captions |
+| 2 | **Claims/statistics** | Numbers, prices, dates, percentages that need fact-checking |
+| 3 | **Deictic references** | "ini", "itu", "lihat", "this", "that", "look at this" |
+| 4 | **Topic transitions** | Moments where conversation shifts to a new subject |
+| 5 | **Key arguments** | Important conclusions, controversial statements, strong opinions |
+| 6 | **Visual context** | Moments where visuals change interpretation |
+| 7 | **Speaker identity** | Speaker changes or identity matters (multi-speaker videos) |
+| 8 | **Entity recognition** | Brand names, product names, on-screen text, logos |
+
+**Minimum 21 moments, no maximum** — scale with video duration and content density.
 
 ---
 
@@ -93,31 +104,58 @@ Every vision finding is classified:
 
 | Feature | Detail |
 |---------|--------|
-| **Zero config** | Auto-installs yt-dlp + ffmpeg on first run — no manual setup |
-| **50+ platforms** | Works with Hermes, Claude Code, Codex, Cursor, and any agent that reads files |
+| **Agent-driven moments** | Agent selects 21+ key moments using 8 criteria — no hardcoded logic |
+| **Full frame coverage** | Analyze EVERY extracted frame — never skip to "save API calls" |
 | **Transcript-first** | JSON3 captions with word-level timing — fast, no video download needed |
-| **Agent-driven** | Agent selects key moments via report.json — no hardcoded logic |
+| **Comprehensive output** | Article-quality analysis with specific data, quotes, conclusions |
+| **Zero config** | Auto-installs yt-dlp + ffmpeg on first run — no manual setup |
+| **50+ platforms** | YouTube, TikTok, Vimeo, Instagram, Loom, + hundreds more via yt-dlp |
 | **Focus mode** | `--start/--end` for dense extraction on specific sections |
-| **Built-in stats** | `--stats` shows processing time, frame count, token estimate |
 | **Whisper fallback** | Groq ($0.004/min) or OpenAI when no captions available |
-| **Multi-platform URLs** | YouTube, TikTok, Vimeo, Instagram, Loom, + hundreds more via yt-dlp |
-| **Progressive disclosure** | SKILL.md loads ~800 tokens — reference files on-demand |
+| **Optional stats** | `--stats` shows processing time, frame count, token estimate |
 
 ---
 
-## Skill Architecture
+## Output Format
 
-The skill uses **progressive disclosure** — the agent loads only what it needs:
+The output focuses on **analysis content**, not process:
 
 ```
-Tier 1: skill_view('watch') → 203-line core (~800 tokens)
-Tier 2: skill_view('watch', file_path) → reference files on-demand
+🎬 **[Video Title]**
+Channel: [Uploader] · Duration: [time]
+
+---
+
+[Comprehensive analysis — key findings, main arguments, conclusions, important quotes]
+
+---
 ```
 
-**Core** (`SKILL.md`): Quick reference, output format, CLI options, configuration
-**References** (`references/`): Detailed workflows, pitfalls, visual verification rules
+**What's included:**
+- All main points from transcript
+- Specific data (numbers, names, dates, statistics)
+- Historical/political context (if relevant)
+- Key quotes from speakers
+- Clear conclusions and recommendations
 
-This keeps token cost minimal (~800 tokens per invocation) while providing full context when needed.
+**What's NOT included:**
+- Process artifacts (cross-reference tables, correction sections)
+- Stats block (only when user specifically requests)
+- Frame-by-frame notes
+
+---
+
+## Analysis Quality Checklist
+
+Before delivering, the agent verifies:
+
+- [ ] All main points from transcript are covered
+- [ ] Specific data (numbers, names, dates) are included
+- [ ] Historical/political context is explained (if relevant)
+- [ ] Key quotes from speakers are included
+- [ ] Conclusions and recommendations are clear
+- [ ] Output language matches transcript language
+- [ ] NO process artifacts in the output
 
 ---
 
@@ -132,8 +170,9 @@ This keeps token cost minimal (~800 tokens per invocation) while providing full 
 
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--detail` | Mode: `transcript-moments`, `screenshot-first`, `transcript`, `efficient`, `balanced`, `token-burner` | `transcript-moments` |
 | `--timestamps T` | Comma-separated timestamps for frame extraction | none |
-| `--detail transcript\|frames` | Transcript-only or frames mode | frames |
+| `--min-moments N` | Minimum key moments to select (agent-driven) | 21 |
 | `--resolution W` | Frame width in pixels (128–4096) | 512 |
 | `--start T` / `--end T` | Focus on a specific section (SS, MM:SS, HH:MM:SS) | full video |
 | `--max-frames N` | Override frame cap | mode default |
@@ -147,15 +186,16 @@ This keeps token cost minimal (~800 tokens per invocation) while providing full 
 
 ---
 
-## Output Formats
+## Detail Modes
 
-| Format | Command | Use When |
-|--------|---------|----------|
-| Both (default) | `/watch URL question` | Agent reads markdown + JSON backup |
-| JSON only | `/watch URL question --output json` | Programmatic processing |
-| Markdown only | `/watch URL question --output markdown` | Direct reading |
-
-The `WatchReport` includes: video metadata, extracted frames with timestamps, full transcript with word-level timing (when available from JSON3 captions), and warnings for missing transcript.
+| Mode | Speed | Data | Best for |
+|------|-------|------|----------|
+| `transcript-moments` | ~15s + frames | Minimal | **DEFAULT** — comprehensive analysis |
+| `screenshot-first` | ~35s | ~10MB | Long videos (>20 min) with captions |
+| `transcript` | ~5s | 0MB | Dialogue-heavy, transcript-first |
+| `efficient` | ~10-20s | 413MB | Quick overview, hard cuts |
+| `balanced` | ~300s | 413MB | Most content, thorough |
+| `token-burner` | ~500s+ | 413MB | Max fidelity, short videos |
 
 ---
 
@@ -175,6 +215,22 @@ Config file: `~/.config/watch/.env`
 
 ---
 
+## Skill Architecture
+
+The skill uses **progressive disclosure** — the agent loads only what it needs:
+
+```
+Tier 1: skill_view('watch') → Core workflow + moment selection criteria
+Tier 2: skill_view('watch', file_path) → Reference files on-demand
+```
+
+**Core** (`SKILL.md`): Workflow steps, moment selection criteria, output format, CLI options
+**References** (`references/`): Detailed workflows, pitfalls, visual verification rules
+
+This keeps token cost minimal while providing full context when needed.
+
+---
+
 ## Development
 
 ```bash
@@ -190,7 +246,6 @@ bash skills/watch/scripts/build-skill.sh
 ## Related Projects
 
 - [bradautomates/claude-video](https://github.com/bradautomates/claude-video) — Original inspiration (7.6k stars)
-- [m1crodevil/hermes-video-rs](https://github.com/m1crodevil/hermes-video-rs) — Rust rewrite (faster startup, single binary)
 
 ---
 
