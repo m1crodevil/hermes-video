@@ -1,6 +1,6 @@
 # /watch — Video Analysis for AI Agents
 
-> **Agent-driven video analysis for Hermes Agent.** Paste any URL, get grounded answers from frames + transcript.
+> **Zero-config video analysis for AI agents.** Paste a URL, get grounded answers from frames + transcript.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -8,7 +8,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/m1crodevil/hermes-video)](https://github.com/m1crodevil/hermes-video/stargazers)
 [![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/m1crodevil/hermes-video/releases)
 
-**Works with:** Hermes Agent · Claude Code · Codex · Any AI agent that reads files
+**Works with:** Hermes Agent · Claude Code · Codex · Cursor · Any AI agent that reads files
 
 Paste a URL or a local path. `/watch` fetches captions, downloads the video, extracts frames at agent-selected timestamps, and delivers a structured report. The agent reads `report.json`, selects key moments, and analyzes what's actually on screen and in the audio.
 
@@ -18,20 +18,18 @@ Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover
 
 ## Quick Install
 
-**Hermes Agent (recommended):**
-
 ```
 hermes skill install watch
 ```
 
-**Manual:**
+Or manually:
 
 ```bash
 git clone https://github.com/m1crodevil/hermes-video.git
 ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 ```
 
-**First run** auto-installs dependencies:
+**First run** auto-installs everything — no manual setup required:
 
 - **macOS** — `brew install ffmpeg yt-dlp`
 - **Linux** — `apt install ffmpeg`, yt-dlp + deno via installer
@@ -75,7 +73,7 @@ Video URL / local path
 8. Cleanup video file (save disk space)
 ```
 
-The binary handles data extraction only. All intelligence (moment selection, analysis, cross-referencing) is handled by the agent. No `moments_prompt.txt`, no `key_moments.json` — the agent reads `report.json` and decides what to analyze.
+The binary handles data extraction only. All intelligence (moment selection, analysis, cross-referencing) is handled by the agent.
 
 ---
 
@@ -88,6 +86,22 @@ Every vision finding is classified:
 - ❓ **fabrication** — claim has no visual evidence
 - ⚠️ **unverified** — cannot determine from visual alone
 - 🔸 **partial** — partially shown on screen
+
+---
+
+## Key Features
+
+| Feature | Detail |
+|---------|--------|
+| **Zero config** | Auto-installs yt-dlp + ffmpeg on first run — no manual setup |
+| **50+ platforms** | Works with Hermes, Claude Code, Codex, Cursor, and any agent that reads files |
+| **Transcript-first** | JSON3 captions with word-level timing — fast, no video download needed |
+| **Agent-driven** | Agent selects key moments via report.json — no hardcoded logic |
+| **Focus mode** | `--start/--end` for dense extraction on specific sections |
+| **Built-in stats** | `--stats` shows processing time, frame count, token estimate |
+| **Whisper fallback** | Groq ($0.004/min) or OpenAI when no captions available |
+| **Multi-platform URLs** | YouTube, TikTok, Vimeo, Instagram, Loom, + hundreds more via yt-dlp |
+| **Progressive disclosure** | SKILL.md loads ~800 tokens — reference files on-demand |
 
 ---
 
@@ -107,25 +121,13 @@ This keeps token cost minimal (~800 tokens per invocation) while providing full 
 
 ---
 
-## Key Features
-
-| Feature | Detail |
-|---------|--------|
-| Transcript-first | JSON3 captions with word-level timing |
-| Agent-driven | Agent selects key moments, no hardcoded logic |
-| Timestamp extraction | Frames at agent-selected timestamps only |
-| Multi-platform | YouTube, TikTok, Vimeo, local files, any URL yt-dlp supports |
-| Whisper fallback | Groq ($0.004/min) or OpenAI — only when no captions |
-| Zero config | Auto-installs yt-dlp + ffmpeg on first run |
-
----
-
 ## CLI Reference
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at 30 seconds?
 /watch ~/Movies/screen-recording.mp4 what's going wrong?
 /watch https://youtu.be/abc --timestamps 1:30,2:45,10
+/watch https://youtu.be/abc --start 2:15 --end 2:45
 ```
 
 | Flag | Description | Default |
@@ -133,12 +135,15 @@ This keeps token cost minimal (~800 tokens per invocation) while providing full 
 | `--timestamps T` | Comma-separated timestamps for frame extraction | none |
 | `--detail transcript\|frames` | Transcript-only or frames mode | frames |
 | `--resolution W` | Frame width in pixels (128–4096) | 512 |
+| `--start T` / `--end T` | Focus on a specific section (SS, MM:SS, HH:MM:SS) | full video |
+| `--max-frames N` | Override frame cap | mode default |
+| `--fps F` | Override auto-fps (max 2.0) | auto |
 | `--out-dir DIR` | Custom working directory | temp dir |
 | `--keep-video` | Retain downloaded video after processing | false |
 | `--cookies` | Use Chrome cookies for yt-dlp (age-restricted videos) | false |
 | `--no-whisper` | Disable Whisper fallback transcription | false |
 | `--output markdown\|json\|both` | Output format | both |
-| `--start T` / `--end T` | Focus on a specific section | full video |
+| `--stats` | Include analysis stats in output | false |
 
 ---
 
@@ -170,47 +175,6 @@ Config file: `~/.config/watch/.env`
 
 ---
 
-## Why Python?
-
-| | Python (hermes-video) | Rust (hermes-video-rs) |
-|---|----------------------|----------------------|
-| **Startup** | ~500ms (Python import) | ~5ms |
-| **Memory** | ~50-100MB | ~5-15MB |
-| **Binary** | 0 (needs Python runtime) | ~6MB self-contained |
-| **Install** | pip + yt-dlp + ffmpeg | Single binary + yt-dlp + ffmpeg + av-scenechange |
-| **Hosts** | **50+ agent platforms** | Hermes Agent only |
-| **Setup** | **Zero — auto-installs** | Manual cargo build |
-
-**Choose Python when:** You need broad agent platform support (Claude Code, Codex, Cursor, 50+ others). No Rust toolchain required.
-
-**Choose Rust when:** You need minimal footprint, fastest startup, or single-binary deployment.
-
----
-
-## Architecture
-
-```
-skills/watch/
-├── SKILL.md              # Core skill (203 lines, ~800 tokens)
-├── references/           # On-demand reference files
-│   ├── pitfalls.md
-│   └── ...
-└── scripts/
-    ├── watch.py          # Entry point — pipeline orchestrator
-    ├── download.py       # yt-dlp wrapper with retry
-    ├── frames.py         # Timestamp-only frame extraction
-    ├── transcribe.py     # Caption selection + Whisper orchestration
-    ├── whisper.py        # Groq/OpenAI Whisper API
-    ├── setup.py          # Preflight + auto-installer
-    ├── config.py         # Configuration from .env
-    ├── models.py         # Pydantic WatchReport model
-    ├── language.py       # Language detection
-    ├── errors.py         # Custom exception hierarchy
-    └── stats_collector.py # Analysis statistics
-```
-
----
-
 ## Development
 
 ```bash
@@ -225,8 +189,8 @@ bash skills/watch/scripts/build-skill.sh
 
 ## Related Projects
 
-- [m1crodevil/hermes-video-rs](https://github.com/m1crodevil/hermes-video-rs) — Rust rewrite (faster startup, single binary)
 - [bradautomates/claude-video](https://github.com/bradautomates/claude-video) — Original inspiration (7.6k stars)
+- [m1crodevil/hermes-video-rs](https://github.com/m1crodevil/hermes-video-rs) — Rust rewrite (faster startup, single binary)
 
 ---
 
