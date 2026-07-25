@@ -2,6 +2,31 @@
 
 All notable changes to `/watch` are documented here.
 
+## [2.0.0] — 2026-07-25
+
+### Breaking Changes
+- **Removed 6 detail modes** → simplified to `transcript` and `frames`. Old mode names (`screenshot-first`, `transcript-moments`, `efficient`, `balanced`, `token-burner`) are mapped via backward-compat aliases with deprecation warnings.
+- **Removed `--auto-moments`, `--max-moments`, `--min-moments` flags.** Agent handles moment selection directly via `report.json`.
+- **Removed 6 LLM pipeline scripts:** `transcript_moments.py`, `batch_vision.py`, `apply_corrections.py`, `vision_verify.py`, `synthesis.py`, `extract_moment_frames.py`. Agent handles all intelligence.
+- **Frame extraction simplified to timestamp-only.** Removed 7 frame engines (scene detection, keyframe, uniform, two-pass, section-based, gap-fill). Frames are extracted only at agent-selected timestamps via `--timestamps`.
+
+### Changed
+- **Architecture shift:** Binary handles data extraction only. Agent handles all intelligence (moment selection, analysis, cross-referencing). Two-pass workflow: run → read `report.json` → select timestamps → re-run with `--timestamps`.
+- **frames.py:** 1039 → 324 LOC (removed 7 engines, kept `extract_at_timestamps`)
+- **watch.py:** 781 → 485 LOC (6 modes → 2, linear pipeline)
+- **models.py:** 609 → 499 LOC (removed `MomentReason`, `KeyMoment`, `KeyMomentStats`)
+- **SKILL.md:** 803 → 203 LOC (75% reduction, progressive disclosure)
+- **README.md:** Rewritten to match Rust v8.0.0 structure
+
+### Removed
+- Scene detection engine (ffmpeg `select='gt(scene,T)'`)
+- Keyframe extraction engine (`-skip_frame nokey`)
+- Uniform sampling engine
+- Two-pass engine (scene + uniform merge)
+- Gap-filling logic
+- Screenshot-first section download pipeline
+- Perceptual deduplication
+
 ## [1.14.0] — 2026-07-13
 
 ### Fixed
