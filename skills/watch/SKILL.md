@@ -26,8 +26,7 @@ Downloads a video, pulls its transcript, extracts frames as JPEGs, then hands ev
 | Flag | Purpose |
 |------|---------|
 | `--detail transcript` | Captions only — no video download when captions exist |
-| `--detail balanced` | Scene-aware frames (cap 100) — thorough |
-| `--detail efficient` | Keyframes only (cap 50) — fast |
+| `--detail frames` | Download + timestamp extraction (agent provides timestamps) |
 | `--start T --end T` | Focus on a section (`SS`, `MM:SS`, or `HH:MM:SS`) |
 | `--timestamps T1,T2,…` | Force frame at each timestamp |
 | `--max-frames N` | Override preset frame cap |
@@ -36,6 +35,20 @@ Downloads a video, pulls its transcript, extracts frames as JPEGs, then hands ev
 | `--output both` | Default: markdown + `report.json` |
 | `--stats` | Include analysis stats in output |
 | `--keep-video` | Retain downloaded video (default: auto-deleted) |
+
+## Output Philosophy
+
+The user wants to understand what the video is about. Deliver comprehensive analysis — like a thorough article review.
+
+**DO:** Summarize key arguments, main findings, conclusions, important quotes. Match user language. Structure for readability. Cross-reference transcript with visual evidence naturally.
+
+**DON'T:** Show work process. No cross-reference tables, no correction sections, no frame-by-frame notes. No stats block unless user asks.
+
+**Data flow:** `watch.py → report.json → agent reads transcript → agent selects moments → watch.py --timestamps → agent vision_analyze → cross-reference → summary`
+
+**STOP when:** Analysis is comprehensive (key findings + main arguments + conclusions). All cross-references incorporated naturally. No process artifacts leak into output text.
+
+**Frame analysis rule:** After extracting frames, analyze EVERY extracted frame with `vision_analyze`. Minimum 21 frames. NEVER skip frames to "save API calls" — fewer frames = blind spots in visual analysis.
 
 ## Resolve `SKILL_DIR` (before any command)
 
@@ -71,7 +84,7 @@ fi
 5. **Re-run with timestamps** — `python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --timestamps 4:32,7:10,9:55 --out-dir <FIXED_DIR>`
    - **Always use `--out-dir <FIXED_DIR>` on BOTH runs** — without it, key_moments.json from run 1 is lost
 6. **Vision analyze** — `vision_analyze(image_url="<workdir>/frames/frame_NNNN.jpg", question="...")`
-   - Sample 21+ frames spread evenly across the list
+   - Analyze EVERY extracted frame — minimum 21, no exceptions
    - Frame filenames are NOT sequential — use `search_files("*.jpg", path="<workdir>/frames")` first
 
 ## Report Parsing
@@ -104,47 +117,47 @@ ls <workdir>/frames/*.jpg | wc -l
 
 ## Output Format
 
-Always use this exact structure for Telegram deliverables:
+Always use this structure:
 
-```
 🎬 **[Video Title]**
-Channel: [Uploader] ([subscribers] subs)
-Published: [date] | Duration: [time]
-Views: [N] · Likes: [N] · Comments: [N]
+Channel: [Uploader] · Duration: [time]
 
 ---
 
-[Summary/answer content here]
+[Comprehensive analysis content — what the video is about, key findings, main arguments, conclusions]
 
 ---
-
-📊 **Analysis Stats**
-━━━━━━━━━━━━━━━━━━━━━━━━
-⏱️ Processing Time: [X]s
-🎬 Video Duration: [time]
-📐 Resolution: [WxH]
-🖼️ Frames Extracted: [N] @ [resolution]px ([engine])
-📝 Transcript: [N] segments [source]
-🎯 Key Moments: [N] detected ([N] critical)
-🔍 Vision Verifications: [N] completed ([N] corrections)
-🪙 Tokens: [N] (estimated)
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-_Work dir: `[path]` — frames + transcript retained._
-```
 
 **Rules:**
 - Use `**bold**` for title only
-- Use `·` (middle dot) as separator, not `|` or `,`
-- Always include work dir footer
-- **NEVER** use raw markdown table syntax — it doesn't render in Telegram
-- Stats are MANDATORY — compile manually if `report.json` is missing
+- Use `·` (middle dot) as separator
+- Keep metadata compact on 1-2 lines
+- Add `---` separator before and after main content
+- **NEVER** use raw markdown table syntax in Telegram output
+- **Stats block is OPTIONAL** — include only if user asks
+- **NEVER output** cross-reference tables, correction sections, or verification trails
+
+## Example Outputs
+
+**Example 1: Simple video summary**
+🎬 **How to Build a REST API in 10 Minutes**
+Channel: TechWithTim · Duration: 10:23
+
+---
+This video walks through building a REST API using Node.js and Express. The host covers route setup, middleware configuration, and error handling in a practical, step-by-step format.
+---
+
+**Example 2: Cross-reference finding**
+The transcript mentions "Ragnarok" at 0:54, but the on-screen text shows "Ragnarök" (with umlaut). This is a common ASR error for Scandinavian names.
+
+**Example 3: Error case (no transcript)**
+⚠️ No transcript available for this video. Set GROQ_API_KEY or OPENAI_API_KEY for Whisper transcription.
 
 ## Configuration
 
 - **Config dir:** `~/.config/watch/`
 - **Env file:** `~/.config/watch/.env` (mode `0600`)
-- **Default detail:** `WATCH_DETAIL=balanced`
+- **Default detail:** `WATCH_DETAIL=frames`
 - **Whisper backend:** Groq (default) or OpenAI — set `WHISPER_BACKEND` in `.env`
 - **API keys:** `GROQ_API_KEY` or `OPENAI_API_KEY` — only needed if captions are missing
 
@@ -158,6 +171,12 @@ _Work dir: `[path]` — frames + transcript retained._
 - If transcript language is unknown, say so
 - If video doesn't cover the question, say "The video doesn't cover this"
 - When terminal output is truncated, read report.json — never fill in from imagination
+
+**See vs Infer:** Distinguish what you SEE from what you INFER. "The screen shows X" vs "It seems like X".
+
+**Flag uncertainty:** Use "appears to be" vs "is". Don't present guesses as facts.
+
+**No assumptions:** Don't fill gaps with plausible guesses. If you can't determine something, say so.
 
 ## Pitfalls
 
@@ -173,13 +192,9 @@ _Work dir: `[path]` — frames + transcript retained._
 
 6. **Transcript misreads proper nouns.** Auto-captions mangle product/tool names. Cross-reference with frames or web search before reporting.
 
-7. **fps downsampling and hw accel DON'T speed up scene detection.** Benchmark: ~2% improvement (noise). Use `--detail transcript` (23x faster) or `--detail efficient` (17x faster) instead.
+7. **YouTube 2026 requires deno + curl_cffi.** Without them, transcripts work but video downloads get HTTP 403. `setup.py` auto-installs both.
 
-8. **YouTube 2026 requires deno + curl_cffi.** Without them, transcripts work but video downloads get HTTP 403. `setup.py` auto-installs both.
-
-9. **Two-run workflows lose key_moments.json without `--out-dir`.** The #1 cause of "why didn't my key moments get used?" failures.
-
-10. **report.json won't exist on timeout.** Always collect metadata from raw files: `video.info.json`, `frames/`, `.json3` subtitles. Stats are MANDATORY.
+8. **report.json won't exist on timeout.** Always collect metadata from raw files: `video.info.json`, `frames/`, `.json3` subtitles.
 
 ## Token Efficiency
 
@@ -200,4 +215,4 @@ Frames dominate token cost: 80 frames at 512px ≈ 50-80k image tokens. Transcri
 
 ## Bundled Scripts
 
-`scripts/watch.py` (entry), `scripts/download.py` (yt-dlp), `scripts/frames.py` (ffmpeg), `scripts/transcribe.py` (captions + Whisper), `scripts/whisper.py` (Groq/OpenAI), `scripts/setup.py` (preflight + installer), `scripts/config.py` (shared config).
+`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (timestamp-only frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq/OpenAI clients), `scripts/setup.py` (preflight + installer), `scripts/config.py` (shared config), `scripts/models.py` (Pydantic WatchReport), `scripts/language.py` (language detection), `scripts/errors.py` (exception hierarchy), `scripts/stats_collector.py` (analysis statistics).
