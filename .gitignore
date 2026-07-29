@@ -62,3 +62,6 @@ audio.wav
 
 # Herms local plans (not for repo)
 .herms/
+
+# Local research & plans
+references/
