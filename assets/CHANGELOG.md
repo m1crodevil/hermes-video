@@ -2,6 +2,18 @@
 
 All notable changes to `/watch` are documented here.
 
+## [2.1.0] — 2026-07-29
+
+### Added
+- **Video caching** (`cache.py`) — SHA256 content hashing + LRU eviction (10GB limit).
+- **Pipeline tests** (`test_pipeline.py`) — 10 new tests for pipeline integration and cache module.
+- **Comprehensive analysis workflow** — transcript-first with agent-driven moment selection.
+
+### Changed
+- **Restructured to `src/watch/` package layout** — proper Python package with `pyproject.toml`.
+- **README** rewritten — Python-first, comprehensive analysis workflow docs.
+- **SKILL.md** rewritten — progressive disclosure, output philosophy alignment.
+
 ## [2.0.0] — 2026-07-25
 
 ### Breaking Changes
