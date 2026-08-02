@@ -15,10 +15,13 @@ All notable changes to `/watch` are documented here.
 - **Detail engine no longer overwrites transcript-moments frames** — the re-run's frames at LLM-selected timestamps were previously clobbered by the scene/keyframe engine; they are now preserved.
 - **transcript-moments first run is now single-pass (P3)** — instead of stopping to wait for the agent to write `key_moments.json`, the pipeline auto-generates heuristic moments (evenly-spaced transcript segments; ffmpeg scene detection when no transcript exists), writes `key_moments.json`, and completes in one invocation. The agent can still refine the file and re-run; `moments_prompt.txt` is still written for optional refinement.
 - **`MomentReason` enum + `_VALID_MOMENT_REASONS`** — added the `auto` reason for heuristically generated moments.
+- **moments_prompt.txt no longer embeds the full transcript (P4)** — the transcript is written once to `transcript.json` in the work dir; the prompt references it instead. Removes the transcript duplication between prompt and report (token bloat on every agent read). Applied to the transcript-moments auto path, the `--auto-moments` path, and the screenshot-first prompt path.
+- **Batch-vision artifacts (P4)** — transcript-moments runs now emit `vision_batch.json` (BatchVisionRequest payload: frame paths, timestamps, verification questions) and `vision_batch_prompt.txt`, so the agent can verify all frames in **one batch vision call** instead of N serial `vision_analyze` calls.
 
 ### Tests
 - **P2 section-download coverage** — `TestTranscriptMomentsSections`: sections-succeed path never touches full download; all-sections-failed path falls back to the full video exactly once.
-- **P3 auto-moments coverage** — `TestTranscriptMomentsAuto`: first run auto-generates moments from transcript (sections path, no full download, prompt still written); local-file scene fallback produces scene-detected moments. 148 passed total.
+- **P3 auto-moments coverage** — `TestTranscriptMomentsAuto`: first run auto-generates moments from transcript (sections path, no full download, prompt still written); local-file scene fallback produces scene-detected moments.
+- **P4 dedupe + vision-batch coverage** — prompt references `transcript.json` (no transcript text baked in); `vision_batch.json`/`vision_batch_prompt.txt` written with existing frame paths. 150 passed total.
 
 ## [2.1.0] — 2026-07-29
 
