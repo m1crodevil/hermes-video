@@ -337,7 +337,11 @@ def main() -> int:
     else:
         work = Path(tempfile.mkdtemp(prefix="watch-"))
     import atexit, shutil as _shutil
-    atexit.register(_shutil.rmtree, work, ignore_errors=True)
+    if not args.out_dir:
+        # Only auto-created temp dirs get cleaned at exit; explicit --out-dir is
+        # the user's artifact location and must survive (bugfix: unconditional
+        # rmtree was deleting explicit out-dirs after every run).
+        atexit.register(_shutil.rmtree, work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
     print(f"[watch] working dir: {work}", file=sys.stderr)
 
