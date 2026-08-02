@@ -204,3 +204,4 @@ def cache_info() -> dict:
         "total_size_human": size_human,
         "max_size": MAX_CACHE_SIZE_GB * (1024 ** 3),
     }
+

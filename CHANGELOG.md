@@ -2,6 +2,13 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased] — 2026-08-02
+
+### Added
+- **`--no-cache` CLI flag** — bypass the on-disk video cache and always download fresh.
+- **Cache wired into the download flow** — `download_url()` now checks `~/.cache/watch/` before invoking yt-dlp (skips re-download on cache hit) and writes fresh downloads back to cache. Audio-only (Whisper) and full-video downloads are keyed separately so they never satisfy each other.
+- **Skill bundle sync** — `skills/watch/scripts/` now includes `cache.py` and the cache-aware `download.py` (flat-import variant).
+
 ## [2.1.0] — 2026-07-29
 
 ### Added

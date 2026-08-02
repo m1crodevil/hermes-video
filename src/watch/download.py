@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from watch.cache import cache_video, get_cached_video
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
@@ -366,6 +368,7 @@ def download_url(
     audio_only: bool = False,
     existing_subtitle: str | None = None,
     use_cookies: bool = False,
+    no_cache: bool = False,
 ) -> dict:
     """Download video via yt-dlp.
 
@@ -374,6 +377,7 @@ def download_url(
             Pass the subtitle_path from fetch_captions() to avoid redundant requests.
         use_cookies: If True, use Chrome cookies (opt-in, breaks android_vr).
             Only use for age-restricted or private videos.
+        no_cache: If True, bypass the on-disk video cache entirely.
     """
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -381,6 +385,37 @@ def download_url(
     url = _sanitize_url(url)
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
+
+    # ── Video cache: skip re-download when we already have the bytes ──
+    # Keyed by URL + mode so audio-only (Whisper) and full-video downloads
+    # never satisfy each other.
+    mode = "audio" if audio_only else "video"
+    if not no_cache:
+        cached = get_cached_video(url, mode=mode)
+        if cached:
+            dest = out_dir / Path(cached).name
+            try:
+                shutil.copy2(cached, dest)
+            except OSError as exc:
+                print(f"[watch] cache copy failed ({exc}) — downloading fresh", file=sys.stderr)
+                cached = None
+            if cached:
+                print(
+                    f"[watch] cache hit ({mode}) — copied {Path(cached).name} to work dir",
+                    file=sys.stderr,
+                )
+                # Metadata is cheap; captions may already be in out_dir from fetch_captions().
+                info = _read_info(out_dir / "video.info.json", url)
+                if not info:
+                    info = fetch_metadata_only(url, out_dir)
+                subtitle = _pick_subtitle(out_dir)
+                return {
+                    "video_path": str(dest),
+                    "subtitle_path": str(subtitle) if subtitle else None,
+                    "info": info or {"url": url},
+                    "downloaded": True,
+                    "cached": True,
+                }
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
@@ -417,11 +452,19 @@ def download_url(
     subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
 
+    # ── Cache the fresh download for future runs (best-effort) ──
+    if not no_cache:
+        try:
+            cache_video(url, str(video), mode=mode)
+        except Exception as exc:
+            print(f"[watch] cache write failed: {exc}", file=sys.stderr)
+
     return {
         "video_path": str(video),
         "subtitle_path": str(subtitle) if subtitle else None,
         "info": info or {"url": url},
         "downloaded": True,
+        "cached": False,
     }
 
 
@@ -431,6 +474,7 @@ def download(
     audio_only: bool = False,
     existing_subtitle: str | None = None,
     use_cookies: bool = False,
+    no_cache: bool = False,
 ) -> dict:
     if is_url(source):
         return download_url(
@@ -438,6 +482,7 @@ def download(
             audio_only=audio_only,
             existing_subtitle=existing_subtitle,
             use_cookies=use_cookies,
+            no_cache=no_cache,
         )
     return resolve_local(source)
 
