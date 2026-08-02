@@ -60,3 +60,70 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+
+
+# ── Video cache wiring ─────────────────────────────────────────────────
+
+def _isolate_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Point watch.cache at a throwaway dir so tests never touch ~/.cache/watch."""
+    from watch import cache
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(cache, "CACHE_DIR", cache_dir)
+    return cache
+
+
+def test_download_url_cache_hit_skips_ytdlp(monkeypatch, tmp_path):
+    """A cached video must be copied to the work dir without re-downloading."""
+    cache = _isolate_cache(monkeypatch, tmp_path)
+
+    # Seed the cache with a fake video file.
+    seeded = tmp_path / "seed.mp4"
+    seeded.write_bytes(b"fake-video-bytes")
+    cached_path = cache.cache_video(URL, str(seeded), mode="video")
+    assert Path(cached_path).exists()
+
+    calls = _capture_argv(monkeypatch)
+    result = download.download_url(URL, tmp_path / "out")
+
+    assert result["cached"] is True
+    assert result["video_path"] != cached_path  # a copy lives in the work dir
+    assert Path(result["video_path"]).exists()
+    assert Path(result["video_path"]).read_bytes() == b"fake-video-bytes"
+    # Only the cheap metadata fetch may hit subprocess — never a video download.
+    video_cmds = [c for c in calls if "-f" in c]
+    assert not video_cmds, "cache hit must not invoke yt-dlp video download"
+
+
+def test_download_url_cache_miss_still_downloads(monkeypatch, tmp_path):
+    """No cached copy → yt-dlp video download runs (SystemExit from _pick_video)."""
+    _isolate_cache(monkeypatch, tmp_path)
+    calls = _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "out")
+    assert calls, "expected yt-dlp to be invoked on cache miss"
+    assert any("--download-sections" not in c for c in calls)
+
+
+def test_download_url_no_cache_bypasses_seeded_cache(monkeypatch, tmp_path):
+    """no_cache=True must ignore an existing cache entry."""
+    cache = _isolate_cache(monkeypatch, tmp_path)
+    seeded = tmp_path / "seed.mp4"
+    seeded.write_bytes(b"fake")
+    cache.cache_video(URL, str(seeded), mode="video")
+
+    calls = _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "out", no_cache=True)
+    assert calls, "no_cache must force a fresh download"
+
+
+def test_cache_mode_separation(monkeypatch, tmp_path):
+    """Audio and video caches must never collide under the same URL."""
+    cache = _isolate_cache(monkeypatch, tmp_path)
+    seeded = tmp_path / "seed.mp4"
+    seeded.write_bytes(b"fake")
+    cache.cache_video(URL, str(seeded), mode="video")
+
+    assert cache.get_cached_video(URL, mode="video") is not None
+    assert cache.get_cached_video(URL, mode="audio") is None, \
+        "an audio-only request must never be satisfied by a cached video"

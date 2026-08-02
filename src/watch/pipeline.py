@@ -109,6 +109,11 @@ def main() -> int:
              "only use for age-restricted or private videos.",
     )
     ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the on-disk video cache (~/.cache/watch/) and always download fresh.",
+    )
+    ap.add_argument(
         "--output",
         choices=["markdown", "json", "both"],
         default="both",
@@ -221,6 +226,7 @@ def main() -> int:
                 audio_only=audio_only,
                 existing_subtitle=existing_sub,
                 use_cookies=args.cookies,
+                no_cache=args.no_cache,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
@@ -438,7 +444,7 @@ def main() -> int:
                 # Fallback: download full video + use efficient mode
                 if not video_path and url_source:
                     print("[watch] downloading video for fallback…", file=sys.stderr)
-                    dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies)
+                    dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies, no_cache=args.no_cache)
                     video_path = dl["video_path"]
                     meta = get_metadata(video_path)
                 print("[watch] screenshot-first: all section downloads failed, falling back to efficient", file=sys.stderr)
@@ -451,7 +457,7 @@ def main() -> int:
         else:
             print("[watch] screenshot-first: no captions available, falling back to efficient", file=sys.stderr)
         if url_source and not video_path:
-            dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies)
+            dl = download(args.source, work / "download", existing_subtitle=existing_sub, use_cookies=args.cookies, no_cache=args.no_cache)
             video_path = dl["video_path"]
             meta = get_metadata(video_path)
         detail = "efficient"
