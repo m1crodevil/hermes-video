@@ -46,6 +46,95 @@ def _cleanup_video(video_path: str | None, downloaded: bool, keep: bool) -> None
             print(f"[watch] warning: could not delete video: {exc}", file=sys.stderr)
 
 
+def _auto_generate_moments(
+    work: Path,
+    transcript_segments: list[dict],
+    video_path: str | None,
+    min_moments: int,
+    resolution: int,
+    start_sec: float | None,
+    end_sec: float | None,
+    info: dict,
+) -> bool:
+    """Auto-generate ``key_moments.json`` heuristically (P3 single-pass).
+
+    Primary: evenly-spaced transcript segments (first + last kept, so the
+    selection spans the full duration). Fallback: ffmpeg scene-detection
+    timestamps when no transcript exists but a video is available.
+    ``moments_prompt.txt`` is still written so the agent can refine the
+    selection and re-run; the pipeline no longer blocks on that round-trip.
+
+    Returns True when ``key_moments.json`` was written.
+    """
+    from watch.frames.extract import _even_indices
+    from watch.frames.scene import detect_scene_timestamps
+
+    count = max(int(min_moments or DEFAULT_MIN_MOMENTS), 1)
+    moments: list[dict] = []
+
+    moments_prompt_path = work / "moments_prompt.txt"
+    if transcript_segments:
+        transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+        moments_prompt = generate_prompt(
+            transcript_for_analysis,
+            info,
+            max_moments=count,
+            min_moments=count,
+        )
+        moments_prompt_path.write_text(moments_prompt, encoding="utf-8")
+
+        idxs = _even_indices(len(transcript_segments), count)
+        for i in idxs:
+            seg = transcript_segments[i]
+            ts = float(seg.get("start", 0.0))
+            text = (seg.get("text") or "").strip()
+            moments.append({
+                "timestamp": ts,
+                "timestamp_fmt": format_time(ts),
+                "word": (text.split(" ")[0][:40] if text else "moment"),
+                "context": text[:200],
+                "reason": "auto",
+                "question": "What is shown in this frame?",
+                "priority": 3,
+            })
+        print(
+            f"[watch] transcript-moments: auto-generated {len(moments)} moments from transcript — "
+            f"agent can refine {work / 'key_moments.json'} and re-run",
+            file=sys.stderr,
+        )
+    elif video_path:
+        scene_ts = detect_scene_timestamps(
+            video_path,
+            start_seconds=start_sec,
+            end_seconds=end_sec,
+            max_scenes=count,
+        )
+        for ts in scene_ts:
+            moments.append({
+                "timestamp": ts,
+                "timestamp_fmt": format_time(ts),
+                "word": "scene-change",
+                "context": "",
+                "reason": "topic_transition",
+                "question": "What is shown in this frame?",
+                "priority": 3,
+            })
+        print(
+            f"[watch] transcript-moments: auto-generated {len(moments)} moments from scene detection",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[watch] transcript-moments: no transcript and no video — cannot generate moments",
+            file=sys.stderr,
+        )
+        return False
+
+    moments_json_path = work / "key_moments.json"
+    moments_json_path.write_text(json.dumps(moments, indent=2), encoding="utf-8")
+    return True
+
+
 def main() -> int:
     import os as _os
     _os.umask(0o077)
@@ -312,8 +401,23 @@ def main() -> int:
 
     # ── Transcript-moments mode: extract frames at LLM-identified timestamps ──
     if detail == "transcript-moments":
+        if not has_moments:
+            # P3: first run no longer blocks on the agent round-trip — auto-
+            # generate heuristic moments so the pipeline completes in one pass.
+            # The agent can still refine key_moments.json and re-run.
+            has_moments = _auto_generate_moments(
+                work,
+                transcript_segments,
+                video_path,
+                min_moments,
+                args.resolution,
+                start_sec,
+                end_sec,
+                dl.get("info") or {},
+            )
         if has_moments:
-            # Re-run: key_moments.json exists — extract frames at those timestamps
+            # key_moments.json exists (agent-refined or auto-generated) —
+            # extract frames at those timestamps
             moments_data = json.loads(moments_json_path.read_text())
             moment_timestamps = []
             for m in moments_data:
@@ -394,39 +498,6 @@ def main() -> int:
             # Mark all as transcript-cue reason
             for f in frames:
                 f["reason"] = "transcript-cue"
-        else:
-            # First run: generate prompt for agent, skip frame extraction
-            from watch.moments import format_transcript_for_analysis, generate_prompt
-
-            transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
-            info = dl.get("info") or {}
-            moments_prompt = generate_prompt(
-                transcript_for_analysis,
-                info,
-                max_moments=min_moments,
-                min_moments=min_moments,
-            )
-            moments_prompt_path = work / "moments_prompt.txt"
-            moments_prompt_path.write_text(moments_prompt, encoding="utf-8")
-            print(
-                f"[watch] transcript-moments: first run — prompt written to {moments_prompt_path}",
-                file=sys.stderr,
-            )
-            print(
-                f"[watch] Agent workflow:", file=sys.stderr,
-            )
-            print(
-                f"  1. Read {moments_prompt_path}", file=sys.stderr,
-            )
-            print(
-                f"  2. Analyze transcript, identify {min_moments}+ key moments", file=sys.stderr,
-            )
-            print(
-                f"  3. Write moments as JSON to {moments_json_path}", file=sys.stderr,
-            )
-            print(
-                f"  4. Re-run watch.py with same args to extract frames", file=sys.stderr,
-            )
 
     # ── Screenshot-first mode: parallel section downloads (no full video) ──
     elif detail == "screenshot-first" and url_source and transcript_segments:
@@ -672,7 +743,7 @@ def main() -> int:
     # Load key_moments.json for transcript-moments mode (already extracted)
     _VALID_MOMENT_REASONS = {
         "proper_noun", "claim", "deictic", "speaker_id",
-        "visual_context", "entity", "topic_transition", "key_argument", "unknown",
+        "visual_context", "entity", "topic_transition", "key_argument", "unknown", "auto",
     }
     if detail == "transcript-moments" and moments_json_path.exists():
         try:

@@ -8,13 +8,17 @@ All notable changes to `/watch` are documented here.
 - **`--no-cache` CLI flag** — bypass the on-disk video cache and always download fresh.
 - **Cache wired into the download flow** — `download_url()` now checks `~/.cache/watch/` before invoking yt-dlp (skips re-download on cache hit) and writes fresh downloads back to cache. Audio-only (Whisper) and full-video downloads are keyed separately so they never satisfy each other.
 - **Skill bundle sync** — `skills/watch/scripts/` now includes `cache.py` and the cache-aware `download.py` (flat-import variant).
+- **`detect_scene_timestamps()`** — ffmpeg scene-change timestamp detection without writing frame files (`frames/scene.py`); used by the transcript-moments auto fallback.
 
 ### Changed
 - **transcript-moments re-run downloads 2s sections instead of the full video** — `key_moments.json` timestamps now go through `download_sections_parallel()` + `extract_from_sections()` (the screenshot-first path), cutting a 58-min video from ~342s/413MB to ~60s/~12MB. Falls back to the full video when section downloads fail or the source is a local file.
 - **Detail engine no longer overwrites transcript-moments frames** — the re-run's frames at LLM-selected timestamps were previously clobbered by the scene/keyframe engine; they are now preserved.
+- **transcript-moments first run is now single-pass (P3)** — instead of stopping to wait for the agent to write `key_moments.json`, the pipeline auto-generates heuristic moments (evenly-spaced transcript segments; ffmpeg scene detection when no transcript exists), writes `key_moments.json`, and completes in one invocation. The agent can still refine the file and re-run; `moments_prompt.txt` is still written for optional refinement.
+- **`MomentReason` enum + `_VALID_MOMENT_REASONS`** — added the `auto` reason for heuristically generated moments.
 
 ### Tests
-- **P2 section-download coverage** — `TestTranscriptMomentsSections`: sections-succeed path never touches full download; all-sections-failed path falls back to the full video exactly once. 146 passed total.
+- **P2 section-download coverage** — `TestTranscriptMomentsSections`: sections-succeed path never touches full download; all-sections-failed path falls back to the full video exactly once.
+- **P3 auto-moments coverage** — `TestTranscriptMomentsAuto`: first run auto-generates moments from transcript (sections path, no full download, prompt still written); local-file scene fallback produces scene-detected moments. 148 passed total.
 
 ## [2.1.0] — 2026-07-29
 

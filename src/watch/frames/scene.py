@@ -206,3 +206,56 @@ def fill_gaps_with_uniform(
 
     return all_frames
 
+
+def detect_scene_timestamps(
+    video_path: str,
+    threshold: float | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    max_scenes: int | None = None,
+) -> list[float]:
+    """Return scene-change timestamps without writing any frame files.
+
+    Runs ffmpeg with ``select='eq(n\\,0)+gt(scene\\,THRESH)',showinfo`` and
+    parses ``pts_time`` from stderr — the same machinery as
+    :func:`extract_scene_candidates` but discarding the frames. Always
+    includes the first frame (t≈0). When ``max_scenes`` is set, the list is
+    even-sampled (first + last kept) down to that many entries.
+
+    Used by the transcript-moments auto fallback (P3): when no transcript is
+    available, scene-change timestamps become the key moments.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    if threshold is None:
+        meta = get_metadata(video_path)
+        duration = meta["duration_seconds"]
+        if start_seconds is not None and end_seconds is not None:
+            duration = end_seconds - start_seconds
+        threshold = adaptive_scene_threshold(duration)
+
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-y"]
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    if end_seconds is not None:
+        cmd += ["-to", f"{end_seconds:.3f}"]
+    cmd += [
+        "-i", str(Path(video_path).resolve()),
+        "-vf", f"select='eq(n\\,0)+gt(scene\\,{threshold})',showinfo",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg scene detection failed: {result.stderr.strip()}")
+
+    offset = start_seconds or 0.0
+    timestamps = sorted(
+        {round(offset + float(m.group(1)), 2) for m in SHOWINFO_TS_RE.finditer(result.stderr)}
+    )
+    if max_scenes is not None and len(timestamps) > max_scenes:
+        # Lazy import: extract.py imports only metadata, so no cycle.
+        from watch.frames.extract import _even_indices
+        timestamps = [timestamps[i] for i in _even_indices(len(timestamps), max_scenes)]
+    return timestamps
+
