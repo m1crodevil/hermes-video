@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "1.14.0"
+version: "2.2.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to your agent so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -624,20 +624,20 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments 
 python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --detail balanced --auto-moments --out-dir /tmp/watch-myvideo
 
 # Step 4: Extract frames at moment timestamps
-python3 "${SKILL_DIR}/scripts/extract_moment_frames.py" \
+python3 "${SKILL_DIR}/scripts/moment_frames.py" \
   --video <workdir>/download/video.mp4 \
   --moments <workdir>/key_moments.json \
   --out-dir <workdir>/moment_frames \
   --update
 
 # Step 5: Generate batch vision prompt
-python3 "${SKILL_DIR}/scripts/batch_vision.py" prompt \
+python3 "${SKILL_DIR}/scripts/vision_batch.py" prompt \
   --moments <workdir>/key_moments.json > <workdir>/vision_prompt.txt
 
 # Step 6: LLM processes vision prompt → writes vision_results.json
 
 # Step 7: Apply corrections to transcript
-python3 "${SKILL_DIR}/scripts/apply_corrections.py" \
+python3 "${SKILL_DIR}/scripts/corrections.py" \
   --transcript <workdir>/report.json \
   --moments <workdir>/key_moments.json \
   --output <workdir>/corrected_transcript.json \
@@ -648,13 +648,13 @@ python3 "${SKILL_DIR}/scripts/apply_corrections.py" \
 
 | Script | Purpose | Input | Output |
 |--------|---------|-------|--------|
-| `transcript_moments.py` | Generate LLM prompt for moment detection | Transcript | moments_prompt.txt |
-| `extract_moment_frames.py` | Extract frames at moment timestamps | Video + moments | Frame files |
-| `batch_vision.py` | Generate batch vision prompt | Moments with frames | vision_prompt.txt |
-| `apply_corrections.py` | Apply corrections to transcript | Transcript + moments | Corrected transcript |
-| `vision_verify.py` | Vision verification workflow | Moments + frames | Verified moments |
+| `moments.py` | Generate LLM prompt for moment detection | Transcript | moments_prompt.txt |
+| `moment_frames.py` | Extract frames at moment timestamps | Video + moments | Frame files |
+| `vision_batch.py` | Generate batch vision prompt | Moments with frames | vision_prompt.txt |
+| `corrections.py` | Apply corrections to transcript | Transcript + moments | Corrected transcript |
+| `vision.py` | Vision verification workflow | Moments + frames | Verified moments |
 | `synthesis.py` | Grounded synthesis prompt | Transcript + verified | synthesis_prompt.txt |
-| `stats_collector.py` | Collect and format analysis stats | Work directory | Stats JSON + formatted output |
+| `stats.py` | Collect and format analysis stats | Work directory | Stats JSON + formatted output |
 
 ### Analysis Stats
 
@@ -733,7 +733,7 @@ The script auto-deletes the downloaded video after processing to prevent disk us
 
 **Groq Whisper practical limits for long videos.** Groq has 2-hour audio/hour rate limit (ASH). Videos up to ~80 min fit in one session. For longer content, chunk the audio first. Files >25MB need either dev-tier account or URL parameter. See [groq-whisper-limits.md](references/groq-whisper-limits.md) for full limits.
 
-**FrameReason enum mismatch causes PydanticValidationError (fixed v1.8.1).** `frames.py` can emit `reason="gap-fill"` for gap-filled frames, but the `FrameReason` enum in `models.py` must include every value. If you see `ValidationError: Input should be 'scene-change', 'keyframe', ... or 'selected' [type=enum, input_value='gap-fill']`, add the missing value to the `FrameReason` enum in `scripts/models.py` and commit to the hermes-video repo.
+**FrameReason enum mismatch causes PydanticValidationError (fixed v1.8.1).** `scripts/frames/` can emit `reason="gap-fill"` for gap-filled frames, but the `FrameReason` enum in `models.py` must include every value. If you see `ValidationError: Input should be 'scene-change', 'keyframe', ... or 'selected' [type=enum, input_value='gap-fill']`, add the missing value to the `FrameReason` enum in `scripts/models.py` and commit to the hermes-video repo.
 
 **Vision models misidentify objects, brands, and names from frames.** Vision models frequently hallucinate or swap identities — e.g., calling a BYD Yuan Up a "Xiaomi SU7", or picking the wrong logo from a multi-logo frame. This affects: car models, product brands, channel names, on-screen text, and logos. **Never report identity based solely on frame analysis.** Cross-reference with: (1) yt-dlp metadata (`info.json` title/channel), (2) transcript proper nouns, (3) badges/text actually readable in the frame. The transcript source line (`- **Source:** captions (json3)`) and the video's `info.json` are authoritative for channel identity. When the vision model's identification contradicts transcript or metadata, trust the transcript/metadata — vision models are unreliable for proper nouns.
 
@@ -843,4 +843,4 @@ Runs yt-dlp + ffmpeg locally. Sends only extracted audio to Whisper API (Groq or
 
 ## Bundled scripts
 
-`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer), `scripts/transcript_moments.py` (LLM-driven moment detection), `scripts/extract_moment_frames.py` (auto-extract frames at timestamps), `scripts/batch_vision.py` (batch vision prompts), `scripts/apply_corrections.py` (auto-apply transcript corrections), `scripts/vision_verify.py` (vision verification workflow), `scripts/synthesis.py` (grounded synthesis prompts). Review scripts before first use to verify behavior.
+`scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames/` (ffmpeg frame extraction), `scripts/transcript.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer), `scripts/moments.py` (LLM-driven moment detection), `scripts/moment_frames.py` (auto-extract frames at timestamps), `scripts/vision_batch.py` (batch vision prompts), `scripts/corrections.py` (auto-apply transcript corrections), `scripts/vision.py` (vision verification workflow), `scripts/synthesis.py` (grounded synthesis prompts). Review scripts before first use to verify behavior.

@@ -7,7 +7,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Hermes Agent](https://img.shields.io/badge/Hermes-Agent-purple)](https://hermes-agent.nousresearch.com)
 [![GitHub stars](https://img.shields.io/github/stars/m1crodevil/hermes-video)](https://github.com/m1crodevil/hermes-video/stargazers)
-[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/m1crodevil/hermes-video/releases)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue)](https://github.com/m1crodevil/hermes-video/releases)
 
 **Works with:** Hermes Agent · Claude Code · Codex · Cursor · Any AI agent that reads files
 

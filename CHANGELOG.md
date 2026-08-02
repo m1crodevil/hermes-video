@@ -7,8 +7,8 @@ All notable changes to `/watch` are documented here.
 ### Added
 - **`--no-cache` CLI flag** — bypass the on-disk video cache and always download fresh.
 - **Cache wired into the download flow** — `download_url()` now checks `~/.cache/watch/` before invoking yt-dlp (skips re-download on cache hit) and writes fresh downloads back to cache. Audio-only (Whisper) and full-video downloads are keyed separately so they never satisfy each other.
-- **Skill bundle sync** — `skills/watch/scripts/` now includes `cache.py` and the cache-aware `download.py` (flat-import variant).
 - **`detect_scene_timestamps()`** — ffmpeg scene-change timestamp detection without writing frame files (`frames/scene.py`); used by the transcript-moments auto fallback.
+- **Skill bundle fully re-synced from `src/watch/`** — `skills/watch/scripts/` is now a flat mirror of the modular package (entry `watch.py` = pipeline, `frames/` package, `moments.py`, `vision_batch.py`, `corrections.py`, `stats.py`, `transcript.py`, …). SKILL.md script references were updated to the new file names.
 
 ### Changed
 - **transcript-moments re-run downloads 2s sections instead of the full video** — `key_moments.json` timestamps now go through `download_sections_parallel()` + `extract_from_sections()` (the screenshot-first path), cutting a 58-min video from ~342s/413MB to ~60s/~12MB. Falls back to the full video when section downloads fail or the source is a local file.
@@ -22,6 +22,9 @@ All notable changes to `/watch` are documented here.
 - **P2 section-download coverage** — `TestTranscriptMomentsSections`: sections-succeed path never touches full download; all-sections-failed path falls back to the full video exactly once.
 - **P3 auto-moments coverage** — `TestTranscriptMomentsAuto`: first run auto-generates moments from transcript (sections path, no full download, prompt still written); local-file scene fallback produces scene-detected moments.
 - **P4 dedupe + vision-batch coverage** — prompt references `transcript.json` (no transcript text baked in); `vision_batch.json`/`vision_batch_prompt.txt` written with existing frame paths. 150 passed total.
+
+### Version
+- Bumped to **2.2.0** — `pyproject.toml`, `skills/watch/SKILL.md` frontmatter, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, README badge.
 
 ## [2.1.0] — 2026-07-29
 
