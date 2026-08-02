@@ -26,14 +26,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
 from config import get_config  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
-REQUIRED_PYTHON_PACKAGES = ["pydantic"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -98,26 +94,6 @@ def _check_ytdlp_deps() -> dict[str, bool]:
     return {"deno": has_deno, "curl_cffi": has_curl_cffi}
 
 
-def _check_python_packages() -> list[str]:
-    """Check if required Python packages are importable."""
-    missing = []
-    for pkg in REQUIRED_PYTHON_PACKAGES:
-        try:
-            __import__(pkg)
-        except ImportError:
-            missing.append(pkg)
-    return missing
-
-
-def _install_python_packages() -> None:
-    """Install missing Python packages via pip."""
-    missing = _check_python_packages()
-    if not missing:
-        return
-    print(f"[setup] installing Python packages: {', '.join(missing)}", file=sys.stderr)
-    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", *missing])
-
-
 _PERM_WARNED: set[str] = set()
 
 
@@ -145,6 +121,8 @@ _PLACEHOLDER_PATTERNS = (
     "changeme", "CHANGEME", "ChangeMe",
     "sk-your", "sk-your-",  # common API key prefixes with placeholder
 )
+# Values that are NOT placeholders even though they're short
+_VALID_NON_PLACEHOLDERS = {"true", "false", "yes", "no"}
 
 
 def _is_placeholder(value: str) -> bool:
@@ -156,6 +134,8 @@ def _is_placeholder(value: str) -> bool:
     stripped = value.strip().lower()
     if not stripped:
         return True
+    if stripped in _VALID_NON_PLACEHOLDERS:
+        return False
     if any(stripped.startswith(p.lower()) for p in _PLACEHOLDER_PATTERNS):
         return True
     # A real production API key is never a single word under 12 chars
@@ -699,9 +679,6 @@ def cmd_install() -> int:
         print(f"[setup] created config: {CONFIG_FILE}")
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
-
-    # Install missing Python packages (pydantic, etc.)
-    _install_python_packages()
 
     # Create yt-dlp config for YouTube 2026 (impersonate + JS runtime)
     _ensure_ytdlp_config()

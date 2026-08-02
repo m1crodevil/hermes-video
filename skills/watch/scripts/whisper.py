@@ -92,7 +92,6 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
 
     dotenv_paths = [
         Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
     ]
 
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
@@ -314,7 +313,7 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
     if not body:
         return ""
     try:
-        return f" — {body.decode('utf-8', errors='replace')[:400]}"
+        return f" — {body.decode('utf-8', errors='replace')[:100]}"
     except Exception:
         return ""
 

@@ -637,4 +637,3 @@ if __name__ == "__main__":
         raise SystemExit(2)
     result = download(sys.argv[1], Path(sys.argv[2]))
     print(json.dumps(result, indent=2))
-
