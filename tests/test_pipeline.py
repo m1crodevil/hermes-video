@@ -16,7 +16,7 @@ import pytest
 from watch.pipeline import main as watch_main
 
 
-def _run(clip: Path, *args: str, out_dir: str | None = None) -> str:
+def _run(clip: Path | str, *args: str, out_dir: str | None = None) -> str:
     """Run the watch CLI by calling main() directly with overridden argv."""
     old_argv = sys.argv
     try:
@@ -125,3 +125,173 @@ class TestCacheModule:
         assert "count" in info
         assert "total_size" in info
         assert "total_size_human" in info
+
+
+# ---------------------------------------------------------------------------
+# P2: transcript-moments section downloads
+# ---------------------------------------------------------------------------
+
+def _make_section_clip(path: Path, color: str = "red", secs: float = 1) -> Path:
+    """Build a tiny solid-color clip to stand in for a yt-dlp section download."""
+    import subprocess
+
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-t", str(secs), "-i", f"color=c={color}:s=160x120:r=5",
+            "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def _write_captions_vtt(path: Path) -> Path:
+    """Write a small VTT the pipeline can parse into transcript segments."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:02.000\nHello world\n\n"
+        "00:00:03.000 --> 00:00:04.000\nSecond segment\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestTranscriptMomentsSections:
+    """P2: transcript-moments re-run should download 2s sections, not the full video."""
+
+    URL = "https://www.youtube.com/watch?v=rlOpbu3Enkw"
+
+    def _prepare(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        section_files: dict[float, Path] | None,
+        fallback_video: Path,
+    ) -> tuple[Path, list[str]]:
+        """Common setup: captions + key_moments.json, mocked network calls.
+
+        Returns (out_dir, calls) where calls records full-video download invocations.
+        """
+        import watch.pipeline as pipeline
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        vtt = _write_captions_vtt(tmp_path / "caps" / "video.en.vtt")
+
+        # Key moments the agent would have written on run 1
+        (out_dir / "key_moments.json").write_text(
+            json.dumps([
+                {"timestamp": 1.0, "word": "hello", "reason": "claim"},
+                {"timestamp": 3.0, "word": "second", "reason": "topic_transition"},
+            ]),
+            encoding="utf-8",
+        )
+
+        # Mock caption fetch (run 1 already did this; avoid yt-dlp network)
+        monkeypatch.setattr(
+            pipeline,
+            "fetch_captions",
+            lambda *a, **k: {
+                "subtitle_path": str(vtt),
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": False,
+            },
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "is_url",
+            lambda *a, **k: True,
+        )
+
+        if section_files is not None:
+            monkeypatch.setattr(
+                pipeline,
+                "download_sections_parallel",
+                lambda *a, **k: {ts: str(p) for ts, p in section_files.items()},
+            )
+        else:
+            monkeypatch.setattr(
+                pipeline,
+                "download_sections_parallel",
+                lambda *a, **k: {},
+            )
+
+        # Fallback full-video download — returns the synthesized clip
+        calls: list[str] = []
+        monkeypatch.setattr(
+            pipeline,
+            "download",
+            lambda *a, **k: calls.append("download") or {
+                "video_path": str(fallback_video),
+                "subtitle_path": None,
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": True,
+                "cached": False,
+            },
+        )
+        return out_dir, calls
+
+    def test_sections_succeed_skips_full_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        """Sections available → frames come from sections; full video never downloaded."""
+        import watch.pipeline as pipeline
+
+        clip1 = _make_section_clip(tmp_path / "sec1.mp4", "red")
+        clip2 = _make_section_clip(tmp_path / "sec2.mp4", "blue")
+        fallback = _make_section_clip(tmp_path / "fallback.mp4", "green", secs=10)
+
+        out_dir, calls = self._prepare(
+            monkeypatch, tmp_path,
+            section_files={1.0: clip1, 3.0: clip2},
+            fallback_video=fallback,
+        )
+
+        out = _run(
+            self.URL,
+            "--detail", "transcript-moments",
+            "--min-moments", "2",
+            out_dir=str(out_dir),
+        )
+
+        assert "frame_0000.jpg" in out
+        assert "frame_0001.jpg" in out
+        # Sections path used — no full video download
+        assert calls == []
+        # Sections cleaned up after extraction
+        assert not (out_dir / "sections").exists()
+
+    def test_sections_fail_falls_back_to_full_video(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        """All sections failed → full video fallback still extracts the moments."""
+        import watch.pipeline as pipeline
+
+        fallback = _make_section_clip(tmp_path / "fallback.mp4", "green", secs=10)
+
+        out_dir, calls = self._prepare(
+            monkeypatch, tmp_path,
+            section_files=None,
+            fallback_video=fallback,
+        )
+
+        out = _run(
+            self.URL,
+            "--detail", "transcript-moments",
+            "--min-moments", "2",
+            out_dir=str(out_dir),
+        )
+
+        assert "cue_0000.jpg" in out
+        # Fallback download happened exactly once
+        assert calls == ["download"]

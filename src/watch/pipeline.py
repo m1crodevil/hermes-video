@@ -208,6 +208,17 @@ def main() -> int:
     # For transcript-moments first run (no key_moments.json yet), skip video download
     if detail == "transcript-moments" and not has_moments and transcript_segments:
         need_video = False
+    # P2: transcript-moments re-run with a URL and no focus range → try fast
+    # 2s section downloads first; only fetch the full video if sections fail.
+    # (focused ⟺ args.start/args.end set, since parse_time(None) → None.)
+    if (
+        detail == "transcript-moments"
+        and has_moments
+        and url_source
+        and not args.start
+        and not args.end
+    ):
+        need_video = False
     # Screenshot-first: skip full video download (sections are downloaded instead)
     if detail == "screenshot-first" and transcript_segments:
         need_video = False
@@ -301,7 +312,7 @@ def main() -> int:
 
     # ── Transcript-moments mode: extract frames at LLM-identified timestamps ──
     if detail == "transcript-moments":
-        if has_moments and video_path:
+        if has_moments:
             # Re-run: key_moments.json exists — extract frames at those timestamps
             moments_data = json.loads(moments_json_path.read_text())
             moment_timestamps = []
@@ -318,20 +329,68 @@ def main() -> int:
                 moment_timestamps.append(float(ts))
             moment_timestamps = sorted(set(moment_timestamps))
 
-            print(
-                f"[watch] transcript-moments: extracting {len(moment_timestamps)} frames "
-                f"at LLM-identified timestamps…",
-                file=sys.stderr,
-            )
-            frames, frame_meta = extract_at_timestamps(
-                video_path,
-                work / "frames",
-                moment_timestamps,
-                resolution=args.resolution,
-                max_frames=None,  # uncapped — extract all moments
-                start_seconds=start_sec,
-                end_seconds=end_sec,
-            )
+            # Fast path (P2): download 2s sections at each moment instead of the
+            # full video. ~2s per section vs the full download — 342s/413MB for
+            # a 58-min video becomes ~60s/~12MB. Falls back to the full video
+            # when sections fail or the source is a local file.
+            frames = []
+            frame_meta = {
+                "engine": "sections",
+                "candidate_count": 0,
+                "selected_count": 0,
+                "fallback": False,
+            }
+            if url_source and not focused and moment_timestamps:
+                section_files = download_sections_parallel(
+                    args.source, moment_timestamps, work / "sections",
+                    use_cookies=args.cookies,
+                )
+                if section_files:
+                    print(
+                        f"[watch] transcript-moments: extracting frames from {len(section_files)} sections…",
+                        file=sys.stderr,
+                    )
+                    frames, frame_meta = extract_from_sections(
+                        section_files, work / "frames",
+                        resolution=args.resolution,
+                    )
+                    shutil.rmtree(work / "sections", ignore_errors=True)
+                else:
+                    print(
+                        "[watch] transcript-moments: all section downloads failed — "
+                        "falling back to full video",
+                        file=sys.stderr,
+                    )
+                    frame_meta["fallback"] = True
+            if not frames and url_source and not video_path:
+                print(
+                    "[watch] transcript-moments: downloading full video for fallback…",
+                    file=sys.stderr,
+                )
+                dl = download(
+                    args.source, work / "download",
+                    existing_subtitle=existing_sub,
+                    use_cookies=args.cookies,
+                    no_cache=args.no_cache,
+                )
+                video_path = dl["video_path"]
+                if video_path:
+                    meta = get_metadata(video_path)
+            if not frames and video_path:
+                print(
+                    f"[watch] transcript-moments: extracting {len(moment_timestamps)} frames "
+                    f"at LLM-identified timestamps…",
+                    file=sys.stderr,
+                )
+                frames, frame_meta = extract_at_timestamps(
+                    video_path,
+                    work / "frames",
+                    moment_timestamps,
+                    resolution=args.resolution,
+                    max_frames=None,  # uncapped — extract all moments
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
+                )
             # Mark all as transcript-cue reason
             for f in frames:
                 f["reason"] = "transcript-cue"
@@ -462,7 +521,15 @@ def main() -> int:
             meta = get_metadata(video_path)
         detail = "efficient"
 
-    if detail != "transcript" and detail != "screenshot-first" and video_path and detail_budget != 0:
+    # transcript-moments re-run already produced frames at the LLM-selected
+    # timestamps — never let the detail engine overwrite them.
+    if (
+        detail != "transcript"
+        and detail != "screenshot-first"
+        and detail != "transcript-moments"
+        and video_path
+        and detail_budget != 0
+    ):
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
