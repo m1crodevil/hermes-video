@@ -1,22 +1,12 @@
-#!/usr/bin/env python3
-"""Custom exceptions for watch skill.
-
-Exception hierarchy:
-- WatchError (base)
-  - DownloadError (video download failures)
-  - ExtractionError (frame extraction failures)
-  - TranscriptionError (transcription failures)
-  - APIError (API request failures)
-  - ConfigError (configuration errors)
-"""
+"""Typed exceptions for hermes-video pipeline."""
 from __future__ import annotations
 
 from typing import Any
 
 
 class WatchError(Exception):
-    """Base exception for watch skill."""
-    
+    """Base error for watch pipeline."""
+
     def __init__(
         self,
         message: str,
@@ -28,25 +18,26 @@ class WatchError(Exception):
 
 
 class DownloadError(WatchError):
-    """Video download failures."""
-    pass
+    """yt-dlp or network failure."""
 
 
-class ExtractionError(WatchError):
-    """Frame extraction failures."""
-    pass
+class FfmpegError(WatchError):
+    """ffmpeg/ffprobe failure."""
 
 
-class TranscriptionError(WatchError):
-    """Transcription failures."""
-    pass
-
-
-class APIError(WatchError):
-    """API request failures."""
-    pass
+class WhisperError(WatchError):
+    """Whisper API failure."""
 
 
 class ConfigError(WatchError):
-    """Configuration errors."""
-    pass
+    """Configuration issue."""
+
+
+class NoCaptionsError(WatchError):
+    """No captions available for video."""
+
+
+# Backward compat aliases
+ExtractionError = FfmpegError
+TranscriptionError = WhisperError
+APIError = WhisperError
