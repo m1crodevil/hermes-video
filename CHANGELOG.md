@@ -9,6 +9,13 @@ All notable changes to `/watch` are documented here.
 - **Cache wired into the download flow** — `download_url()` now checks `~/.cache/watch/` before invoking yt-dlp (skips re-download on cache hit) and writes fresh downloads back to cache. Audio-only (Whisper) and full-video downloads are keyed separately so they never satisfy each other.
 - **Skill bundle sync** — `skills/watch/scripts/` now includes `cache.py` and the cache-aware `download.py` (flat-import variant).
 
+### Changed
+- **transcript-moments re-run downloads 2s sections instead of the full video** — `key_moments.json` timestamps now go through `download_sections_parallel()` + `extract_from_sections()` (the screenshot-first path), cutting a 58-min video from ~342s/413MB to ~60s/~12MB. Falls back to the full video when section downloads fail or the source is a local file.
+- **Detail engine no longer overwrites transcript-moments frames** — the re-run's frames at LLM-selected timestamps were previously clobbered by the scene/keyframe engine; they are now preserved.
+
+### Tests
+- **P2 section-download coverage** — `TestTranscriptMomentsSections`: sections-succeed path never touches full download; all-sections-failed path falls back to the full video exactly once. 146 passed total.
+
 ## [2.1.0] — 2026-07-29
 
 ### Added
