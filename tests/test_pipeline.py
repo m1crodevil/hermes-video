@@ -404,3 +404,120 @@ class TestTranscriptMomentsAuto:
         assert all(m["reason"] == "topic_transition" for m in moments)
         assert moments[0]["timestamp"] == 0.0
         assert "cue_0000.jpg" in out
+
+    def test_first_run_auto_prompt_dedupes_transcript(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        """moments_prompt.txt references transcript.json instead of baking the transcript."""
+        import watch.pipeline as pipeline
+
+        out_dir = self._prepare_captions(monkeypatch, tmp_path)
+
+        clip1 = _make_section_clip(tmp_path / "sec1.mp4", "red")
+        clip2 = _make_section_clip(tmp_path / "sec2.mp4", "blue")
+        monkeypatch.setattr(
+            pipeline,
+            "download_sections_parallel",
+            lambda *a, **k: {1.0: str(clip1), 3.0: str(clip2)},
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "download",
+            lambda *a, **k: {
+                "video_path": str(clip1),
+                "subtitle_path": None,
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": True,
+                "cached": False,
+            },
+        )
+
+        _run(
+            self.URL,
+            "--detail", "transcript-moments",
+            "--min-moments", "2",
+            out_dir=str(out_dir),
+        )
+
+        # Canonical transcript written once on disk
+        transcript = json.loads((out_dir / "transcript.json").read_text())
+        assert len(transcript) == 2
+        prompt = (out_dir / "moments_prompt.txt").read_text()
+        # Transcript text no longer baked into the prompt
+        assert "Hello world" not in prompt
+        assert "Second segment" not in prompt
+        # ...but the prompt points the agent at the canonical file
+        assert "transcript.json" in prompt
+
+
+# ---------------------------------------------------------------------------
+# P4: batch-vision artifacts
+# ---------------------------------------------------------------------------
+
+class TestVisionBatchArtifacts:
+    """P4: transcript-moments runs emit batch-vision request + prompt."""
+
+    URL = "https://www.youtube.com/watch?v=rlOpbu3Enkw"
+
+    def test_vision_batch_written_with_frames(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        import watch.pipeline as pipeline
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        vtt = _write_captions_vtt(tmp_path / "caps" / "video.en.vtt")
+        monkeypatch.setattr(
+            pipeline,
+            "fetch_captions",
+            lambda *a, **k: {
+                "subtitle_path": str(vtt),
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": False,
+            },
+        )
+        monkeypatch.setattr(pipeline, "is_url", lambda *a, **k: True)
+
+        clip1 = _make_section_clip(tmp_path / "sec1.mp4", "red")
+        clip2 = _make_section_clip(tmp_path / "sec2.mp4", "blue")
+        monkeypatch.setattr(
+            pipeline,
+            "download_sections_parallel",
+            lambda *a, **k: {1.0: str(clip1), 3.0: str(clip2)},
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "download",
+            lambda *a, **k: {
+                "video_path": str(clip1),
+                "subtitle_path": None,
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": True,
+                "cached": False,
+            },
+        )
+
+        out = _run(
+            self.URL,
+            "--detail", "transcript-moments",
+            "--min-moments", "2",
+            out_dir=str(out_dir),
+        )
+
+        batch = json.loads((out_dir / "vision_batch.json").read_text())
+        assert batch["total"] == 2
+        assert len(batch["frames"]) == 2
+        for f in batch["frames"]:
+            assert Path(f["frame_path"]).exists()
+            assert f["question"]
+        prompt = (out_dir / "vision_batch_prompt.txt").read_text()
+        assert "Frames to Analyze" in prompt
+        # Frames still listed in the report
+        assert "frame_0000.jpg" in out

@@ -22,7 +22,7 @@ from watch.frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamp
 from watch.models import build_report  # noqa: E402
 from watch.transcript import filter_range, format_transcript, parse_json3, parse_vtt  # noqa: E402
 from watch.whisper import load_api_key, transcribe_video  # noqa: E402
-from watch.moments import generate_prompt, format_transcript_for_analysis  # noqa: E402
+from watch.moments import generate_prompt  # noqa: E402
 from watch.stats import StatsTimer, collect_stats, format_stats_telegram, format_stats_compact  # noqa: E402
 
 
@@ -74,9 +74,20 @@ def _auto_generate_moments(
 
     moments_prompt_path = work / "moments_prompt.txt"
     if transcript_segments:
-        transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+        # P4: write the transcript to disk ONCE (canonical) and have the
+        # prompt reference it — avoids duplicating the full transcript in
+        # moments_prompt.txt AND report.json (token bloat on every agent read).
+        transcript_json_path = work / "transcript.json"
+        transcript_json_path.write_text(
+            json.dumps(transcript_segments, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        transcript_ref = (
+            f"[Transcript: {len(transcript_segments)} timestamped segments — "
+            f"read {transcript_json_path}]"
+        )
         moments_prompt = generate_prompt(
-            transcript_for_analysis,
+            transcript_ref,
             info,
             max_moments=count,
             min_moments=count,
@@ -133,6 +144,68 @@ def _auto_generate_moments(
     moments_json_path = work / "key_moments.json"
     moments_json_path.write_text(json.dumps(moments, indent=2), encoding="utf-8")
     return True
+
+
+def _write_vision_batch(work: Path, moments: list[dict], frames: list[dict]) -> None:
+    """Write batch-vision artifacts so the agent does ONE vision call.
+
+    ``vision_batch.json`` carries the BatchVisionRequest payload (frame paths,
+    timestamps, verification questions) and ``vision_batch_prompt.txt`` the
+    generated prompt — replacing N serial vision_analyze calls with a single
+    batch request. Frames are matched to moments by timestamp, with a
+    positional fallback for frames whose timestamp missed by rounding.
+    """
+    from watch.vision_batch import generate_batch_prompt
+
+    if not moments or not frames:
+        return
+
+    def _to_seconds(ts: object) -> float:
+        if isinstance(ts, str):
+            parts = ts.strip().split(":")
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+            return float(ts)
+        return float(ts)  # type: ignore[arg-type]
+
+    frame_by_ts = {f.get("timestamp_seconds"): f for f in frames}
+    batch_moments: list[dict] = []
+    for i, m in enumerate(moments):
+        ts_f = round(_to_seconds(m.get("timestamp", 0)), 2)
+        frame = frame_by_ts.get(ts_f)
+        if frame is None and i < len(frames):
+            frame = frames[i]  # positional fallback (e.g. rounding drift)
+        if frame is None:
+            continue
+        batch_moments.append({
+            "index": i,
+            "timestamp": m.get("timestamp_fmt") or str(m.get("timestamp", "0:00")),
+            "frame_path": frame["path"],
+            "word": m.get("word", ""),
+            "question": m.get("question", "What is shown in this frame?"),
+        })
+
+    if not batch_moments:
+        return
+
+    request = {
+        "frames": batch_moments,
+        "total": len(batch_moments),
+        "priority_filter": None,
+    }
+    (work / "vision_batch.json").write_text(
+        json.dumps(request, indent=2), encoding="utf-8",
+    )
+    (work / "vision_batch_prompt.txt").write_text(
+        generate_batch_prompt(batch_moments), encoding="utf-8",
+    )
+    print(
+        f"[watch] wrote vision batch request + prompt ({len(batch_moments)} frames) — "
+        f"1 batch vision call instead of {len(batch_moments)} serial",
+        file=sys.stderr,
+    )
 
 
 def main() -> int:
@@ -539,11 +612,22 @@ def main() -> int:
             # The agent analyzes the transcript, identifies 21+ key moments,
             # writes key_moments.json, then re-runs this script.
             if transcript_segments:
-                from watch.moments import format_transcript_for_analysis, generate_prompt
-                transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+                from watch.moments import generate_prompt
+                # P4: reference transcript.json instead of re-baking the full
+                # transcript into the prompt.
+                transcript_json_path = work / "transcript.json"
+                if not transcript_json_path.exists():
+                    transcript_json_path.write_text(
+                        json.dumps(transcript_segments, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                transcript_ref = (
+                    f"[Transcript: {len(transcript_segments)} timestamped segments — "
+                    f"read {transcript_json_path}]"
+                )
                 info = dl.get("info") or {}
                 moments_prompt = generate_prompt(
-                    transcript_for_analysis, info,
+                    transcript_ref, info,
                     max_moments=min_moments, min_moments=min_moments,
                 )
                 moments_prompt_path = work / "moments_prompt.txt"
@@ -777,11 +861,26 @@ def main() -> int:
         except Exception as exc:
             print(f"[watch] failed to load key_moments.json: {exc}", file=sys.stderr)
 
+    # P4: emit batch-vision artifacts so the agent can verify all frames in
+    # one batch call instead of N serial vision_analyze calls.
+    if detail == "transcript-moments" and key_moments_data and frames:
+        _write_vision_batch(work, key_moments_data, frames)
+
     if args.auto_moments and transcript_segments:
-        # Generate LLM prompt for moment detection
-        transcript_for_analysis = format_transcript_for_analysis(transcript_segments)
+        # Generate LLM prompt for moment detection (P4: reference transcript.json
+        # instead of re-baking the full transcript into the prompt).
+        transcript_json_path = work / "transcript.json"
+        if not transcript_json_path.exists():
+            transcript_json_path.write_text(
+                json.dumps(transcript_segments, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        transcript_ref = (
+            f"[Transcript: {len(transcript_segments)} timestamped segments — "
+            f"read {transcript_json_path}]"
+        )
         moments_prompt = generate_prompt(
-            transcript_for_analysis,
+            transcript_ref,
             info,
             max_moments=args.max_moments,
             min_moments=min_moments,
