@@ -1,7 +1,7 @@
 # /watch — Video Analysis for AI Agents
 
 > **It reads. It selects. It verifies.**
-> Python-powered video analysis skill for Hermes Agent — transcript-first with agent-driven moment selection. Cross-references frames against captions to catch what either one misses.
+> Python-powered video analysis skill for Hermes Agent — transcript-first with auto-generated moment selection. Cross-references frames against captions to catch what either one misses.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -11,7 +11,7 @@
 
 **Works with:** Hermes Agent · Claude Code · Codex · Cursor · Any AI agent that reads files
 
-Paste a URL or a local path. Hermes fetches captions, downloads the video, extracts frames at agent-selected timestamps, and cross-references the transcript against what's actually on screen. Auto-captions misspell names? It catches that. A claim doesn't match the visual? It flags that.
+Paste a URL or a local path. Hermes fetches captions, downloads only the video sections it needs, extracts frames at key-moment timestamps, and cross-references the transcript against what's actually on screen. Auto-captions misspell names? It catches that. A claim doesn't match the visual? It flags that.
 
 Zero config to start. `yt-dlp` and `ffmpeg` install on first run. Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
 
@@ -64,25 +64,29 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 
 ## How It Works
 
-`/watch` runs a **two-pass workflow** — transcript first, then targeted frame extraction:
+`/watch` runs a **single-pass pipeline** — transcript first, then targeted frame extraction. No agent round-trip required:
 
 ```
 Video URL / local path
     ↓
-Pass 1: Transcript + Metadata (no video download)
+Step 1: Transcript + Metadata (no video download)
     ├── Fetch captions via yt-dlp (JSON3 preferred)
     ├── Parse transcript with word-level timing
     ├── Whisper fallback (if no captions, API key available)
-    └── Write report.json with full transcript
+    └── Write report.json + transcript.json (deduped — prompts reference the file)
     ↓
-Pass 2: Agent-Driven Moment Selection
-    ├── Agent reads FULL transcript (mandatory)
-    ├── Selects 21+ key moments using 8 criteria
-    ├── Writes key_moments.json
-    └── Re-run with --timestamps → extract frames
+Step 2: Auto-Generated Key Moments (single-pass)
+    ├── Evenly-spaced transcript segments (or ffmpeg scene detection)
+    ├── Writes key_moments.json + moments_prompt.txt
+    └── Agent MAY refine the JSON and re-run — the pipeline doesn't block on it
     ↓
-Pass 3: Comprehensive Analysis
-    ├── Vision analyze EVERY frame (no skipping)
+Step 3: Frame Extraction (targeted)
+    ├── 2-second sections per moment — NOT the full video
+    ├── Fallback: full video download (cached in ~/.cache/watch)
+    └── One frame per LLM-selected timestamp
+    ↓
+Step 4: Batch Vision Verification
+    ├── All frames verified in ONE batch vision call (vision_batch.json)
     ├── Cross-reference transcript × visuals × metadata
     ├── Identify ASR errors, speaker identity, visual context
     └── Generate article-quality analysis
@@ -90,7 +94,7 @@ Pass 3: Comprehensive Analysis
 Cleanup video file (save disk space)
 ```
 
-**Why two passes?** Pass 1 provides the full transcript for intelligent moment selection. Pass 2 extracts frames only at agent-selected moments — targeted at proper nouns, claims, deictic references, and topic changes. No wasted frames, no blind spots.
+**Why single-pass?** Moment selection used to block on an agent writing `key_moments.json` between runs. The pipeline now auto-generates heuristic moments (evenly spaced transcript segments, or ffmpeg scene changes when there's no transcript), so a run completes end-to-end in one invocation. Re-runs with an edited `key_moments.json` download only 2-second sections at the selected timestamps instead of the full video.
 
 ### Cross-Reference Methodology
 
@@ -106,7 +110,7 @@ Every vision finding is classified:
 
 ## Moment Selection Criteria
 
-The agent selects key moments using **8 mandatory criteria**:
+Key moments are selected using **8 criteria** (agent-guided when refining, heuristic when auto-generated):
 
 | # | Criteria | What to look for |
 |---|----------|------------------|
@@ -119,7 +123,7 @@ The agent selects key moments using **8 mandatory criteria**:
 | 7 | **Speaker identity** | Speaker changes or identity matters (multi-speaker videos) |
 | 8 | **Entity recognition** | Brand names, product names, on-screen text, logos |
 
-**Minimum 21 moments, no maximum** — scale with video duration and content density.
+**Default 50 moments, no maximum** — scale with video duration and content density (`--min-moments` to adjust).
 
 ---
 
@@ -143,8 +147,10 @@ This keeps token cost minimal while providing full context when needed.
 
 | Feature | Detail |
 |---------|--------|
-| **Agent-driven moments** | 8 selection criteria — no hardcoded logic |
-| **Full frame coverage** | Analyze EVERY frame — no skipping |
+| **Single-pass pipeline** | Auto-generates key moments — no blocking agent round-trip |
+| **Section downloads** | 2s sections per moment instead of the full video on re-runs |
+| **Video cache** | SHA-256 keyed, 10GB LRU cache in `~/.cache/watch/` |
+| **Batch vision** | ALL frames in one vision call — not N serial calls |
 | **Transcript-first** | JSON3 captions with word-level timing |
 | **Cross-reference** | Frames vs transcript — catches errors |
 | **Comprehensive output** | Article-quality analysis |
@@ -169,7 +175,8 @@ This keeps token cost minimal while providing full context when needed.
 |------|-------------|---------|
 | `--detail` | Mode: `transcript-moments`, `screenshot-first`, `transcript`, `efficient`, `balanced`, `token-burner` | `transcript-moments` |
 | `--timestamps T` | Comma-separated timestamps for frame extraction | none |
-| `--min-moments N` | Minimum key moments to select (agent-driven) | 21 |
+| `--min-moments N` | Minimum key moments to generate/select | 50 |
+| `--max-moments N` | Maximum key moments for the analysis prompt | 15 |
 | `--resolution W` | Frame width in pixels (128–4096) | 512 |
 | `--start T` / `--end T` | Focus on a specific section (SS, MM:SS, HH:MM:SS) | full video |
 | `--max-frames N` | Override frame cap | mode default |
@@ -177,9 +184,13 @@ This keeps token cost minimal while providing full context when needed.
 | `--out-dir DIR` | Custom working directory | temp dir |
 | `--keep-video` | Retain downloaded video after processing | false |
 | `--cookies` | Use Chrome cookies for yt-dlp (age-restricted videos) | false |
+| `--no-cache` | Bypass the on-disk video cache, always download fresh | false |
 | `--no-whisper` | Disable Whisper fallback transcription | false |
+| `--whisper {groq,openai}` | Force a specific Whisper backend | groq→openai |
+| `--auto-moments` | Write the moments prompt for agent refinement | false |
 | `--output markdown\|json\|both` | Output format | both |
 | `--stats` | Include analysis stats in output | false |
+| `--stats-format telegram\|compact` | Stats formatting | telegram |
 
 ---
 
@@ -191,20 +202,22 @@ This keeps token cost minimal while providing full context when needed.
 | JSON only | `/watch URL question --output json` | Programmatic processing |
 | Markdown only | `/watch URL question --output markdown` | Direct reading |
 
-The `WatchReport` includes: video metadata, extracted frames with timestamps, full transcript with word-level timing (when available from JSON3 captions), key moment metadata (LLM-selected moments with reasons), and warnings for missing transcript.
+The `WatchReport` includes: video metadata, extracted frames with timestamps, full transcript with word-level timing (when available from JSON3 captions), key moment metadata (auto-generated or LLM-selected moments with reasons), and warnings for missing transcript.
 
 ---
 
 ## Detail Modes
 
-| Mode | Speed | Data | Best for |
-|------|-------|------|----------|
-| `transcript-moments` | ~15s + frames | Minimal | **DEFAULT** — comprehensive analysis |
+| Mode | Speed | Download | Best for |
+|------|-------|----------|----------|
+| `transcript-moments` | ~15s + frames | 2s sections | **DEFAULT** — comprehensive analysis |
 | `screenshot-first` | ~35s | ~10MB | Long videos (>20 min) with captions |
 | `transcript` | ~5s | 0MB | Dialogue-heavy, transcript-first |
-| `efficient` | ~10-20s | 413MB | Quick overview, hard cuts |
-| `balanced` | ~300s | 413MB | Most content, thorough |
-| `token-burner` | ~500s+ | 413MB | Max fidelity, short videos |
+| `efficient` | ~10-20s | full video | Quick overview, hard cuts |
+| `balanced` | ~300s | full video | Most content, thorough |
+| `token-burner` | ~500s+ | full video | Max fidelity, short videos |
+
+Full-video downloads are cached (`~/.cache/watch/`, 10GB LRU), so repeat runs of any mode skip the network transfer entirely.
 
 ---
 
@@ -215,7 +228,8 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Capability | Requirement | Cost |
 |------------|-------------|------|
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Agent-side moment selection | Agent LLM (via Hermes) | Included |
+| Auto-generated moment selection | Built into the pipeline | Free |
+| Agent-driven moment refinement | Agent LLM (via Hermes) | Included |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) | ~$0.004/min |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) | Standard pricing |
 | Disable Whisper | `--no-whisper` | Free, frames-only |
@@ -234,20 +248,23 @@ SETUP_COMPLETE=true
 
 ```
 hermes-video/
-├── skills/watch/
+├── src/watch/                # Modular package (source of truth)
+│   ├── pipeline.py           # CLI entry + orchestration
+│   ├── cache.py              # SHA-256 keyed video cache (10GB LRU)
+│   ├── download.py           # yt-dlp wrapper + 2s section downloads
+│   ├── moments.py            # Moment prompt generation + parsing
+│   ├── vision_batch.py       # Batch vision verification payloads
+│   ├── frames/               # Frame extraction (extract/metadata/scene/dedup)
+│   └── ...
+├── skills/watch/             # Installed skill (flat mirror of src/watch)
 │   ├── SKILL.md              # Core skill (workflow + criteria)
-│   ├── scripts/
-│   │   ├── watch.py          # Entry point
-│   │   ├── download.py       # yt-dlp wrapper
-│   │   ├── frames.py         # ffmpeg extraction
-│   │   ├── transcribe.py     # Caption parsing
-│   │   └── ...
+│   ├── scripts/              # Flattened bundle — watch.py entry point
 │   └── references/           # On-demand reference files
-│       ├── agent-workflow.md
-│       ├── pitfalls.md
-│       └── ...
-└── tests/
+├── tests/
+└── dist/watch.skill          # Built skill archive (gitignored)
 ```
+
+`skills/watch/scripts/` is a flat mirror of `src/watch/` — regenerate it with `build-skill.sh` whenever the package changes, so the installed skill stays in sync.
 
 ---
 

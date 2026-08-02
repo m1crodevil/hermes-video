@@ -14,6 +14,10 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 - 🔍 **Detail modes** — `screenshot-first` | `transcript` | `transcript-moments` | `efficient` | `balanced` | `token-burner`
 - 🎯 **Focus mode** — `--start`/`--end` for dense frames on a specific section
 - ⏱️ **Transcript-cue frames** — `--timestamps` for moments the speaker flags
+- ⚡ **Single-pass transcript-moments** — auto-generates key moments (no blocking agent round-trip); agent can refine `key_moments.json` and re-run
+- 🔪 **2-second section downloads** — re-runs fetch only the sections around selected moments instead of the full video (58-min video: ~342s/413MB → ~60s/~12MB)
+- 🗄️ **Video cache** — SHA-256 keyed, 10GB LRU in `~/.cache/watch/`; `--no-cache` to bypass
+- 👁️ **Batch vision verification** — all frames verified in ONE batch call (`vision_batch.json`) instead of N serial calls
 - 🧹 **Auto-cleanup** — downloaded video deleted after processing (saves 200MB–1GB)
 - 🍪 **Opt-in cookies** — `--cookies` flag for age-restricted/private videos (default OFF; breaks android_vr)
 - 📊 **Structured output** — Pydantic models, JSON + markdown reports
@@ -22,7 +26,6 @@ A Hermes skill that watches videos for you. Downloads with yt-dlp, extracts scen
 - ✅ **Minimum density guarantee** — at least 1 frame per 60s for videos >10 min
 - 📊 **Mandatory stats** — stats always included in deliverable, even on timeout (agent-collected from raw files)
 - 🎯 **LLM-driven moment detection** — `--auto-moments` generates prompts for transcript-frame alignment
-- 📐 **Transcript-cue extraction** — `--timestamps` extracts frames at speaker-flagged moments
 
 ## 📦 Prerequisites
 
@@ -151,7 +154,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail trans
 # Screenshot-first (fastest for long videos with captions)
 python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail screenshot-first
 
-# Transcript-moments (LLM-driven moment detection + frame extraction)
+# Transcript-moments (single-pass auto moments + frame extraction)
 python3 "${SKILL_DIR}/scripts/watch.py" "https://youtu.be/abc123" --detail transcript-moments --min-moments 50
 
 # Focus on a section (denser frames)
@@ -170,7 +173,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" /path/to/video.mp4
 |------|--------|----------------|----------|------------|
 | `screenshot-first` | LLM-driven timestamps | ~35s | **PRIMARY** — long videos with captions | ~30K |
 | `transcript` | 0 (transcript only) | ~5s | Long videos, quick answers | ~5K |
-| `transcript-moments` | 50+ moment frames | ~60s | Deep transcript analysis | ~50K |
+| `transcript-moments` | 50+ moment frames | ~60s (2s sections) | Deep transcript analysis | ~50K |
 | `efficient` | ≤50 keyframes | ~10-20s | Fast overview | ~30K |
 | `balanced` | ≤100 scene-aware | ~300s | Most use cases | ~60K |
 | `token-burner` | uncapped | ~500s+ | Maximum fidelity | ~100K+ |
@@ -179,7 +182,9 @@ python3 "${SKILL_DIR}/scripts/watch.py" /path/to/video.mp4
 
 - **`screenshot-first`** — Videos >10 min with captions. Downloads only 2-second sections at LLM-identified timestamps (10x faster than full download).
 - **`transcript`** — Dialogue-heavy content where transcript is primary evidence. No video download when captions exist.
-- **`transcript-moments`** — Need both transcript AND visual verification at key moments. Generates 50+ moment frames.
+- **`transcript-moments`** — Need both transcript AND visual verification at key moments. Generates 50+ moment frames from 2-second section downloads (full video only as fallback).
+
+Full-video downloads are cached (`~/.cache/watch/`, 10GB LRU), so repeat runs skip the network transfer entirely.
 - **`efficient`** — Quick visual overview without scene detection overhead. Keyframe extraction only.
 - **`balanced`** — Default mode. Scene-aware frame selection with adaptive thresholds.
 - **`token-burner`** — Maximum visual fidelity. Two-pass extraction (scene detection + uniform sampling).
