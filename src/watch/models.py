@@ -60,6 +60,7 @@ class MomentReason(str, Enum):
     TOPIC_TRANSITION = "topic_transition"
     KEY_ARGUMENT = "key_argument"
     UNKNOWN = "unknown"
+    AUTO = "auto"
 
 
 class KeyMoment(BaseModel):

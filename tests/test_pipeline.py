@@ -295,3 +295,112 @@ class TestTranscriptMomentsSections:
         assert "cue_0000.jpg" in out
         # Fallback download happened exactly once
         assert calls == ["download"]
+
+
+# ---------------------------------------------------------------------------
+# P3: auto-generated moments (single-pass, no agent round-trip)
+# ---------------------------------------------------------------------------
+
+class TestTranscriptMomentsAuto:
+    """P3: first run auto-generates key_moments.json and completes in one pass."""
+
+    URL = "https://www.youtube.com/watch?v=rlOpbu3Enkw"
+
+    def _prepare_captions(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> Path:
+        """Mock caption fetch + is_url; returns out_dir (no key_moments.json)."""
+        import watch.pipeline as pipeline
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        vtt = _write_captions_vtt(tmp_path / "caps" / "video.en.vtt")
+        monkeypatch.setattr(
+            pipeline,
+            "fetch_captions",
+            lambda *a, **k: {
+                "subtitle_path": str(vtt),
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": False,
+            },
+        )
+        monkeypatch.setattr(pipeline, "is_url", lambda *a, **k: True)
+        return out_dir
+
+    def test_first_run_auto_generates_moments_from_transcript(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        """No key_moments.json → moments auto-generated from transcript, sections used."""
+        import watch.pipeline as pipeline
+
+        out_dir = self._prepare_captions(monkeypatch, tmp_path)
+        assert not (out_dir / "key_moments.json").exists()
+
+        clip1 = _make_section_clip(tmp_path / "sec1.mp4", "red")
+        clip2 = _make_section_clip(tmp_path / "sec2.mp4", "blue")
+        fallback = _make_section_clip(tmp_path / "fallback.mp4", "green", secs=10)
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            pipeline,
+            "download_sections_parallel",
+            lambda *a, **k: {1.0: str(clip1), 3.0: str(clip2)},
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "download",
+            lambda *a, **k: calls.append("download") or {
+                "video_path": str(fallback),
+                "subtitle_path": None,
+                "info": {"duration": 10, "title": "test"},
+                "downloaded": True,
+                "cached": False,
+            },
+        )
+
+        out = _run(
+            self.URL,
+            "--detail", "transcript-moments",
+            "--min-moments", "2",
+            out_dir=str(out_dir),
+        )
+
+        # Auto-generated moments written (evenly-spaced transcript starts)
+        moments = json.loads((out_dir / "key_moments.json").read_text())
+        assert [m["timestamp"] for m in moments] == [1.0, 3.0]
+        assert all(m["reason"] == "auto" for m in moments)
+        # Prompt still written for optional agent refinement
+        assert (out_dir / "moments_prompt.txt").exists()
+        # Sections path used — no full video download
+        assert calls == []
+        assert "frame_0000.jpg" in out
+        assert "frame_0001.jpg" in out
+
+    def test_first_run_scene_fallback_no_transcript(
+        self,
+        tmp_path: Path,
+        ffmpeg_installed: None,
+    ):
+        """Local file without captions → scene detection generates the moments."""
+        video = _make_section_clip(tmp_path / "local.mp4", "green", secs=10)
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        out = _run(
+            video,
+            "--detail", "transcript-moments",
+            "--min-moments", "5",
+            out_dir=str(out_dir),
+        )
+
+        moments = json.loads((out_dir / "key_moments.json").read_text())
+        assert moments, "expected scene-detected moments"
+        assert all(m["reason"] == "topic_transition" for m in moments)
+        assert moments[0]["timestamp"] == 0.0
+        assert "cue_0000.jpg" in out
