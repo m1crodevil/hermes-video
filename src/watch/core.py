@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from watch.config import get_config
-from watch.download import download, fetch_captions, is_url, resolve_local
+from watch.download import fetch_captions, is_url, resolve_local
 from watch.frames import extract_at_timestamps, get_metadata
 from watch.output import AnalysisCapabilities, FrameInfo, TranscriptSegment, WatchReport
 from watch.transcript import format_transcript, parse_json3, parse_vtt
