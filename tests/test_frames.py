@@ -10,11 +10,7 @@ from pathlib import Path
 
 import pytest
 
-# Ensure the scripts directory is importable
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-import frames
+from watch.frames import metadata as frames
 
 
 # ── format_time ──────────────────────────────────────────────────────────────
