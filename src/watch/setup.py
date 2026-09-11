@@ -26,6 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Allow imports when setup.py is run directly from src/watch/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from watch.config import get_config  # noqa: E402
 
 
