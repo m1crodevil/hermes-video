@@ -30,8 +30,12 @@ Downloads a video, pulls its transcript, extracts frames at the timestamps the a
 ## Usage
 
 ```bash
-python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> --timestamps 0:30,1:45 [--resolution 512] [--output json|markdown|both]
+python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> [--timestamps 0:30,1:45] [--resolution 512] [--output json|markdown|both]
 ```
+
+- If `--timestamps` is provided, frames are extracted at those timestamps.
+- If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
+- If no video is available (e.g. transcript-only mode), only the transcript is returned.
 
 ## Setup preflight
 

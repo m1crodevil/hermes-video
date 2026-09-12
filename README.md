@@ -24,8 +24,12 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 ## Usage
 
 ```bash
-/watch <url|path> --timestamps 0:30,1:45,3:00 [--resolution 512] [--output json|markdown|both]
+/watch <url|path> [--timestamps 0:30,1:45,3:00]
 ```
+
+- If `--timestamps` is provided, frames are extracted at those timestamps.
+- If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
+- If no video is available (e.g. transcript-only mode), only the transcript is returned.
 
 The pipeline is now single-pass and agent-driven:
 

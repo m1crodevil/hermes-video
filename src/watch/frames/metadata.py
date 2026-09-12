@@ -35,6 +35,7 @@ def get_metadata(video_path: str) -> dict:
 
     duration = float(fmt.get("duration") or video_stream.get("duration") or 0)
     return {
+        "duration": duration,
         "duration_seconds": duration,
         "width": video_stream.get("width"),
         "height": video_stream.get("height"),

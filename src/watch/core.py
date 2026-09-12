@@ -53,6 +53,15 @@ def _parse_timestamps(text: str | None) -> list[float]:
     return timestamps
 
 
+def _default_timestamps(duration: float, count: int = 3) -> list[float]:
+    """Return evenly spaced timestamps across the video duration."""
+    if duration <= 0:
+        return []
+    if count < 2:
+        return [0.0]
+    return [i * duration / (count - 1) for i in range(count)]
+
+
 def _fmt_duration(seconds: float) -> str:
     total = int(round(seconds))
     h, rem = divmod(total, 3600)
@@ -82,8 +91,8 @@ def run(source: str, args: argparse.Namespace) -> int:
         video_path = dl.get("video_path")
         downloaded = dl.get("downloaded", False)
 
-        # If timestamps requested but no video downloaded, try fetching video
-        if args.timestamps and not video_path:
+        # Ensure we have a video for frame extraction (needed for YouTube URLs)
+        if not video_path:
             print("[watch] no video downloaded, attempting video fetch for frames…", file=sys.stderr)
             video_dl = fetch_video(source, work / "video", js_runtimes=args.js_runtimes)
             video_path = video_dl.get("video_path")
@@ -134,6 +143,10 @@ def run(source: str, args: argparse.Namespace) -> int:
     frames: list[FrameInfo] = []
     frame_meta: dict = {"engine": "none", "selected_count": 0}
     timestamps = _parse_timestamps(args.timestamps)
+    # Auto-pick default timestamps if none provided and we have a video + duration
+    if not timestamps and video_path and duration > 0:
+        timestamps = _default_timestamps(duration)
+        print(f"[watch] auto timestamps: {timestamps}", file=sys.stderr)
     if timestamps and video_path:
         raw_frames, frame_meta = extract_at_timestamps(
             video_path,
