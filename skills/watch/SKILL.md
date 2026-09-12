@@ -37,6 +37,10 @@ python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> [--timestamps 0:30,1:45] [--
 - If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
 - If no video is available (e.g. transcript-only mode), only the transcript is returned.
 
+### Behavior when `/watch <url>` is invoked without timestamps
+
+The Python `/watch` skill defaults to auto-selecting start, middle, and end timestamps when the video file can be obtained. It does not wait for the user to provide timestamps before extracting frames. Captions-only output only occurs when the video stream itself is unavailable.
+
 ## Setup preflight
 
 ```bash
