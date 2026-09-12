@@ -1,7 +1,7 @@
 # /watch — Video Analysis for AI Agents
 
 > Python-powered video analysis skill for Hermes Agent — Rust-parity single-pass pipeline.
-> Downloads captions, falls back to Whisper, and extracts frames only at the timestamps the agent asks for.
+> Downloads captions, falls back to Whisper, and extracts frames at the timestamps the agent asks for.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -31,11 +31,11 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 - If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
 - If no video is available (e.g. transcript-only mode), only the transcript is returned.
 
-The pipeline is now single-pass and agent-driven:
+The pipeline is single-pass and agent-driven:
 
-1. Fetch captions via `yt-dlp` (JSON3/VTT)
-2. Fallback to Whisper if no captions and API key is set
-3. Extract frames at agent-provided `--timestamps`
+1. Fetch captions + metadata via `yt-dlp` (JSON3/VTT)
+2. Fallback to Whisper if no captions and a Groq/OpenAI API key is set
+3. Extract frames at `--timestamps` (or auto-picked defaults) with `ffmpeg`
 4. Emit `report.json` + Markdown
 
 Pass `--no-whisper` to skip transcription fallback.
@@ -45,7 +45,9 @@ Pass `--no-whisper` to skip transcription fallback.
 ```
 Video URL / local path
     ↓
-Download captions + metadata (yt-dlp)
+Fetch captions + metadata (yt-dlp)
+    ↓
+Fetch video if needed for frame extraction
     ↓
 Whisper fallback (if needed)
     ↓
@@ -57,7 +59,7 @@ Emit report.json + report.md
 ## Development
 
 ```bash
-python3 -m pytest tests/ -q
+python3 -m pytest tests/ -q   # 16 tests
 ```
 
 ## Requirements

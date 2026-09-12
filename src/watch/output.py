@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -13,9 +13,6 @@ class TranscriptSegment:
     text: str
     words: list[dict] | None = None
 
-    def to_dict(self):
-        return {"start": self.start, "end": self.end, "text": self.text, "words": self.words}
-
 
 @dataclass
 class FrameInfo:
@@ -23,18 +20,12 @@ class FrameInfo:
     timestamp: float
     timestamp_fmt: str
 
-    def to_dict(self):
-        return {"path": self.path, "timestamp": self.timestamp, "timestamp_fmt": self.timestamp_fmt}
-
 
 @dataclass
 class AnalysisCapabilities:
     transcript: bool = True
     frame_extraction: bool = False
     visual_verification: bool = False
-
-    def to_dict(self):
-        return asdict(self)
 
 
 @dataclass
@@ -53,20 +44,7 @@ class WatchReport:
     warnings: list[str]
 
     def to_dict(self):
-        return {
-            "title": self.title,
-            "source": self.source,
-            "uploader": self.uploader,
-            "language": self.language,
-            "frames": [f.to_dict() for f in self.frames],
-            "transcript": [t.to_dict() for t in self.transcript],
-            "transcript_source": self.transcript_source,
-            "video_access": self.video_access,
-            "analysis_capabilities": self.analysis_capabilities.to_dict(),
-            "duration": self.duration,
-            "working_dir": self.working_dir,
-            "warnings": self.warnings,
-        }
+        return asdict(self)
 
     def to_json_file(self, path: Path) -> None:
         path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))

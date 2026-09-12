@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch captions/metadata via yt-dlp, or resolve a local file path."""
+"""Fetch captions/metadata and/or video via yt-dlp, or resolve a local file."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,7 @@ SLEEP_SUBTITLES = "3"
 
 
 def _sanitize_url(url: str) -> str:
-    return ''.join(c for c in url if c.isprintable())
+    return "".join(c for c in url if c.isprintable())
 
 
 def is_url(source: str) -> bool:
@@ -75,54 +75,46 @@ def _read_info(info_path: Path, url: str) -> dict:
     return info
 
 
-def fetch_metadata_only(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
-    if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(out_dir / "video.%(ext)s")
+def _base_ytdlp_cmd(output_template: str, url: str, js_runtimes: str | None = None) -> list[str]:
     cmd = [
-        "yt-dlp", "--skip-download", "--write-info-json", "--no-write-subs",
-        "--no-playlist", "-o", output_template, "--", _sanitize_url(url),
+        "yt-dlp", "--no-playlist",
     ]
     if js_runtimes:
-        cmd.insert(1, "--js-runtimes")
-        cmd.insert(2, js_runtimes)
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
-    return _read_info(out_dir / "video.info.json", url)
+        cmd.extend(["--js-runtimes", js_runtimes])
+    cmd.extend([
+        "-o", output_template,
+        "--", _sanitize_url(url),
+    ])
+    return cmd
+
+
+def _run_ytdlp(cmd: list[str], timeout: int = 300) -> None:
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=timeout)
 
 
 def fetch_captions(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
+    """Download metadata + subtitles (without video)."""
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    info = fetch_metadata_only(url, out_dir, js_runtimes=js_runtimes)
-    best_lang = info.get("language", "en") or "en"
-    if best_lang not in VALID_LANG_CODES:
-        best_lang = "en"
-
-    lang_pattern = f"{best_lang}.*" if best_lang != "en" else "en.*"
     output_template = str(out_dir / "video.%(ext)s")
-
-    cmd = [
-        "yt-dlp",
+    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes) + [
         "--skip-download",
         "-N", "4",
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", lang_pattern,
+        "--sub-langs", "en.*",
         "--sub-format", "json3/best",
-        "--no-playlist",
-        "--ignore-errors",
         "--sleep-subtitles", SLEEP_SUBTITLES,
-        "-o", output_template,
-        "--", _sanitize_url(url),
     ]
-    if js_runtimes:
-        cmd.insert(1, "--js-runtimes")
-        cmd.insert(2, js_runtimes)
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
+    _run_ytdlp(cmd)
+
+    info = _read_info(out_dir / "video.info.json", url)
+    best_lang = info.get("language", "en") or "en"
+    if best_lang not in VALID_LANG_CODES:
+        best_lang = "en"
     subtitle = _pick_subtitle(out_dir, best_lang)
 
     return {
@@ -144,16 +136,14 @@ def fetch_video(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--ignore-errors",
+        "-i",
         "-o", output_template,
-        "--", _sanitize_url(url),
     ]
     if js_runtimes:
-        cmd.insert(1, "--js-runtimes")
-        cmd.insert(2, js_runtimes)
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
+        cmd.extend(["--js-runtimes", js_runtimes])
+    cmd.extend(["--", _sanitize_url(url)])
+    _run_ytdlp(cmd)
 
-    # Find the downloaded video file
     video_path = None
     for ext in VIDEO_EXTS:
         candidates = list(out_dir.glob(f"video*{ext}"))

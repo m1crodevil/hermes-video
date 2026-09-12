@@ -8,7 +8,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from watch.config import get_config
 from watch.download import fetch_captions, fetch_video, is_url, resolve_local
 from watch.frames import extract_at_timestamps, get_metadata
 from watch.output import AnalysisCapabilities, FrameInfo, TranscriptSegment, WatchReport

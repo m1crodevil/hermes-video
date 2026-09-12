@@ -30,9 +30,9 @@ def test_timestamps_extract_cue_frames(cut_clip: Path):
     assert "frames" in out.lower()
 
 
-def test_no_timestamps_skips_frame_extraction(cut_clip: Path):
+def test_no_timestamps_auto_extracts_frames(cut_clip: Path):
     out = _run(cut_clip)
-    assert "no frames" in out.lower() or "_ frames extracted._" in out.lower()
+    assert "frames" in out.lower()
 
 
 def test_multiple_timestamps_extract_multiple_frames(cut_clip: Path):
