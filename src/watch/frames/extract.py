@@ -5,7 +5,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from watch.frames.metadata import _scale_filter
+MAX_READ_DIMENSION = 1998
+
+
+def _scale_filter(resolution: int) -> str:
+    return (
+        f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
+        "force_original_aspect_ratio=decrease:force_divisible_by=2"
+    )
 
 
 def _even_indices(count: int, n: int) -> list[int]:

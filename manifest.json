@@ -1,6 +1,6 @@
 {
   "name": "hermes-video",
-  "version": "1.5.0",
+  "version": "2.3.0",
   "description": "Video analysis skill for Hermes Agent",
   "author": "m1crodevil",
   "license": "MIT",
@@ -10,14 +10,12 @@
   "hermes": {
     "min_version": "0.8.0",
     "skills": ["watch"],
-    "dependencies": ["ffmpeg", "yt-dlp", "deno", "curl_cffi"],
+    "dependencies": ["ffmpeg", "yt-dlp"],
     "optional_dependencies": ["groq", "openai"]
   },
   "files": [
     "skills/watch/SKILL.md",
     "skills/watch/scripts/*.py",
-    "skills/watch/references/*.md",
-    "skills/watch/templates/*",
     "skills/watch/assets/*"
   ]
 }

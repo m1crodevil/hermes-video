@@ -1,71 +1,51 @@
-"""Whisper auto-chunking: plan, split, and timestamp stitching."""
+"""Whisper API helpers."""
 from __future__ import annotations
 
-import math
 import subprocess
 from pathlib import Path
+
 import pytest
 from watch import whisper
 
-MB = 1024 * 1024
 
-class TestPlanChunks:
-    def test_under_limit_is_single_chunk(self):
-        plan = whisper.plan_chunks(total_seconds=600.0, total_bytes=5 * MB, max_bytes=24 * MB)
-        assert plan == [(0.0, 600.0)]
+class TestLoadApiKey:
+    def _set_home(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    def test_at_limit_is_single_chunk(self):
-        plan = whisper.plan_chunks(total_seconds=600.0, total_bytes=24 * MB, max_bytes=24 * MB)
-        assert plan == [(0.0, 600.0)]
+    def test_no_key_returns_none(self, monkeypatch, tmp_path):
+        self._set_home(monkeypatch, tmp_path)
+        monkeypatch.setenv("GROQ_API_KEY", "")
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        backend, key = whisper.load_api_key()
+        assert backend is None
+        assert key is None
 
-    def test_over_limit_splits_into_enough_chunks(self):
-        # 71 MB against a 24 MB cap → ceil(71/24) = 3 chunks.
-        plan = whisper.plan_chunks(total_seconds=3600.0, total_bytes=71 * MB, max_bytes=24 * MB)
-        assert len(plan) == 3
+    def test_prefers_groq(self, monkeypatch, tmp_path):
+        self._set_home(monkeypatch, tmp_path)
+        monkeypatch.setenv("GROQ_API_KEY", "sk-groq")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        backend, key = whisper.load_api_key()
+        assert backend == "groq"
+        assert key == "sk-groq"
 
-    def test_chunks_are_contiguous_and_cover_full_duration(self):
-        total = 3600.0
-        plan = whisper.plan_chunks(total_seconds=total, total_bytes=71 * MB, max_bytes=24 * MB)
-        # Offsets start at 0 and each picks up where the previous ended.
-        assert plan[0][0] == 0.0
-        for (off, dur), (next_off, _) in zip(plan, plan[1:]):
-            assert math.isclose(off + dur, next_off)
-        last_off, last_dur = plan[-1]
-        assert math.isclose(last_off + last_dur, total)
+    def test_openai_fallback(self, monkeypatch, tmp_path):
+        self._set_home(monkeypatch, tmp_path)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        backend, key = whisper.load_api_key()
+        assert backend == "openai"
+        assert key == "sk-openai"
 
-    def test_each_chunk_estimated_under_limit(self):
-        total_seconds, total_bytes, cap = 3600.0, 71 * MB, 24 * MB
-        plan = whisper.plan_chunks(total_seconds, total_bytes, cap)
-        bytes_per_second = total_bytes / total_seconds
-        for _off, dur in plan:
-            assert dur * bytes_per_second <= cap
-
-    def test_zero_duration_is_single_chunk(self):
-        plan = whisper.plan_chunks(total_seconds=0.0, total_bytes=0, max_bytes=24 * MB)
-        assert plan == [(0.0, 0.0)]
-
-
-class TestShiftSegments:
-    def test_adds_offset_to_start_and_end(self):
-        segs = [{"start": 0.0, "end": 2.5, "text": "hi"}, {"start": 2.5, "end": 4.0, "text": "there"}]
-        shifted = whisper.shift_segments(segs, 1800.0)
-        assert shifted == [
-            {"start": 1800.0, "end": 1802.5, "text": "hi"},
-            {"start": 1802.5, "end": 1804.0, "text": "there"},
-        ]
-
-    def test_zero_offset_is_identity(self):
-        segs = [{"start": 1.0, "end": 2.0, "text": "x"}]
-        assert whisper.shift_segments(segs, 0.0) == segs
-
-    def test_does_not_mutate_input(self):
-        segs = [{"start": 0.0, "end": 1.0, "text": "x"}]
-        whisper.shift_segments(segs, 10.0)
-        assert segs[0]["start"] == 0.0
+    def test_preferred_limits_selection(self, monkeypatch, tmp_path):
+        self._set_home(monkeypatch, tmp_path)
+        monkeypatch.setenv("GROQ_API_KEY", "sk-groq")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        backend, key = whisper.load_api_key(preferred="openai")
+        assert backend == "openai"
+        assert key == "sk-openai"
 
 
 def _make_mp3(path: Path, seconds: float) -> None:
-    """Synthesize a mono 16k 64k mp3 of a sine tone — mirrors extract_audio's format."""
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -77,77 +57,44 @@ def _make_mp3(path: Path, seconds: float) -> None:
     )
 
 
-class TestSplitAudio:
-    def test_creates_one_file_per_plan_entry(self, tmp_path: Path):
-        full = tmp_path / "audio.mp3"
-        _make_mp3(full, 6.0)
-        plan = [(0.0, 3.0), (3.0, 3.0)]
+def test_extract_audio(tmp_path: Path):
+    from watch.frames.metadata import get_metadata
 
-        chunks = whisper.split_audio(full, tmp_path, plan)
+    video = tmp_path / "test.mp4"
+    _make_mp3(tmp_path / "audio.mp3", 2.0)
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=black:s=32x24:d=2.0",
+            "-i", str(tmp_path / "audio.mp3"),
+            "-shortest", str(video),
+        ],
+        check=True,
+    )
 
-        assert len(chunks) == 2
-        for chunk_path, _offset in chunks:
-            assert chunk_path.exists() and chunk_path.stat().st_size > 0
-
-    def test_returns_plan_offsets(self, tmp_path: Path):
-        full = tmp_path / "audio.mp3"
-        _make_mp3(full, 6.0)
-        plan = [(0.0, 3.0), (3.0, 3.0)]
-
-        chunks = whisper.split_audio(full, tmp_path, plan)
-
-        assert [offset for _path, offset in chunks] == [0.0, 3.0]
-
-    def test_chunks_are_smaller_than_full(self, tmp_path: Path):
-        full = tmp_path / "audio.mp3"
-        _make_mp3(full, 6.0)
-        plan = [(0.0, 3.0), (3.0, 3.0)]
-
-        chunks = whisper.split_audio(full, tmp_path, plan)
-
-        full_size = full.stat().st_size
-        for chunk_path, _offset in chunks:
-            assert chunk_path.stat().st_size < full_size
+    out = tmp_path / "out.mp3"
+    result = whisper.extract_audio(str(video), out)
+    assert result.exists()
+    assert out.stat().st_size > 0
+    meta = get_metadata(str(result))
+    assert meta["duration_seconds"] > 0
 
 
-class TestAudioDuration:
-    def test_reads_duration_of_synthesized_clip(self, tmp_path: Path):
-        audio = tmp_path / "audio.mp3"
-        _make_mp3(audio, 5.0)
-        assert whisper.audio_duration(audio) == pytest.approx(5.0, abs=0.5)
-
-
-class TestTranscribeChunks:
-    def test_shifts_and_concatenates_each_chunk(self):
-        chunks = [(Path("a.mp3"), 0.0), (Path("b.mp3"), 100.0)]
-
-        def fake_transcribe(path: Path) -> list[dict]:
-            return [{"start": 0.0, "end": 2.0, "text": path.stem}]
-
-        out = whisper.transcribe_chunks(chunks, fake_transcribe)
-
-        assert out == [
-            {"start": 0.0, "end": 2.0, "text": "a"},
-            {"start": 100.0, "end": 102.0, "text": "b"},
+def test_segments_from_response():
+    data = {
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": "hello"},
+            {"start": 2.0, "end": 3.5, "text": "world"},
         ]
+    }
+    segs = whisper._segments_from_response(data)
+    assert len(segs) == 2
+    assert segs[0]["text"] == "hello"
+    assert segs[1]["text"] == "world"
 
-    def test_keeps_successful_chunks_when_one_fails(self):
-        chunks = [(Path("a.mp3"), 0.0), (Path("b.mp3"), 100.0)]
 
-        def flaky(path: Path) -> list[dict]:
-            if path.stem == "b":
-                raise SystemExit("chunk b failed")
-            return [{"start": 1.0, "end": 2.0, "text": "a"}]
-
-        out = whisper.transcribe_chunks(chunks, flaky)
-
-        assert out == [{"start": 1.0, "end": 2.0, "text": "a"}]
-
-    def test_raises_when_every_chunk_fails(self):
-        chunks = [(Path("a.mp3"), 0.0), (Path("b.mp3"), 100.0)]
-
-        def always_fail(path: Path) -> list[dict]:
-            raise SystemExit("boom")
-
-        with pytest.raises(SystemExit):
-            whisper.transcribe_chunks(chunks, always_fail)
+def test_segments_from_response_falls_back_to_full_text():
+    data = {"text": "hello world"}
+    segs = whisper._segments_from_response(data)
+    assert len(segs) == 1
+    assert segs[0]["text"] == "hello world"

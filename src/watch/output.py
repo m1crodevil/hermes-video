@@ -30,7 +30,6 @@ class FrameInfo:
 @dataclass
 class AnalysisCapabilities:
     transcript: bool = True
-    scene_detection: bool = False
     frame_extraction: bool = False
     visual_verification: bool = False
 
@@ -52,8 +51,6 @@ class WatchReport:
     duration: float
     working_dir: str
     warnings: list[str]
-    scene_boundaries: list[float] | None
-    scene_count: int | None
 
     def to_dict(self):
         return {
@@ -69,8 +66,6 @@ class WatchReport:
             "duration": self.duration,
             "working_dir": self.working_dir,
             "warnings": self.warnings,
-            "scene_boundaries": self.scene_boundaries,
-            "scene_count": self.scene_count,
         }
 
     def to_json_file(self, path: Path) -> None:

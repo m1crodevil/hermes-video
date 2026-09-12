@@ -5,8 +5,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from watch.config import get_config
-
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -22,7 +20,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-whisper", action="store_true", help="Disable Whisper fallback")
     ap.add_argument("--whisper", choices=["groq", "openai"], default=None, help="Whisper backend")
     ap.add_argument("--output", choices=["markdown", "json", "both"], default="both", help="Output format")
-    ap.add_argument("--detail", type=str, default=None, help="Deprecated; kept for backward compatibility")
     return ap
 
 

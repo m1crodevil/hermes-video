@@ -140,8 +140,6 @@ def run(source: str, args: argparse.Namespace) -> int:
 
     # 6. Build report
     title = info.get("title") or source
-    scene_boundaries: list[float] | None = None
-    scene_count: int | None = None
     has_transcript = bool(transcript)
     has_frames = bool(frames)
     video_access = "denied" if url_source and not video_path else ("available" if url_source else "local")
@@ -157,15 +155,12 @@ def run(source: str, args: argparse.Namespace) -> int:
         video_access=video_access,
         analysis_capabilities=AnalysisCapabilities(
             transcript=has_transcript,
-            scene_detection=scene_boundaries is not None and len(scene_boundaries) > 0,
             frame_extraction=has_frames,
             visual_verification=has_frames,
         ),
         duration=duration,
         working_dir=str(work),
         warnings=[],
-        scene_boundaries=scene_boundaries,
-        scene_count=scene_count,
     )
 
     # 7. Cleanup
