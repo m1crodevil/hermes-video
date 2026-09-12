@@ -33,8 +33,6 @@ Downloads a video, pulls its transcript, extracts frames at the timestamps the a
 python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> --timestamps 0:30,1:45 [--resolution 512] [--output json|markdown|both]
 ```
 
-If the skill is run from a cloned repo, the repo's virtualenv must be active (or `src/` on `PYTHONPATH`) so the `watch` package resolves. If only the standalone `skills/watch/` folder is installed, copy it as-is and ensure Python 3.11+ can resolve the `watch` package from the `scripts/` directory.
-
 ## Setup preflight
 
 ```bash
