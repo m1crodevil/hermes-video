@@ -62,3 +62,8 @@ python3 -m pytest tests/ -q
 - ffmpeg
 - yt-dlp
 - Groq or OpenAI API key (optional, for Whisper fallback)
+
+
+## Running outside the repo
+
+If you run `/watch` from a standalone copy of `skills/watch/`, ensure Python can resolve the `watch` package. The easiest way is to keep the `scripts/` directory as-is and run from the repo with the provided virtualenv active.
