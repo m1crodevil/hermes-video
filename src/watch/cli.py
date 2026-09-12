@@ -20,6 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-whisper", action="store_true", help="Disable Whisper fallback")
     ap.add_argument("--whisper", choices=["groq", "openai"], default=None, help="Whisper backend")
     ap.add_argument("--output", choices=["markdown", "json", "both"], default="both", help="Output format")
+    ap.add_argument("--js-runtimes", type=str, default=None, help="yt-dlp JS runtimes (e.g. deno,node)")
     return ap
 
 

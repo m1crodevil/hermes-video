@@ -18,6 +18,9 @@ from pathlib import Path
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+# yt-dlp needs an external JS runtime to download YouTube video streams.
+# Captions still work without it, but frames require it. Deno is recommended.
+JS_RUNTIMES = ["deno", "node", "qjs", "bun"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 
@@ -82,6 +85,14 @@ def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if shutil.which(b) is None]
 
 
+def _detect_js_runtime() -> str | None:
+    """Return the first JS runtime found on PATH that yt-dlp can use."""
+    for name in JS_RUNTIMES:
+        if shutil.which(name) is not None:
+            return name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Env scaffolding
 # ---------------------------------------------------------------------------
@@ -117,6 +128,7 @@ def _status() -> dict:
     missing = _check_binaries()
     has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
+    js_runtime = _detect_js_runtime()
     status: str
     if not missing and has_key:
         status = "ready"
@@ -133,6 +145,8 @@ def _status() -> dict:
         "first_run": not setup_complete,
         "setup_complete": setup_complete,
         "missing_binaries": missing,
+        "js_runtime_available": js_runtime is not None,
+        "js_runtime": js_runtime,
         "whisper_backend": backend,
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
@@ -158,6 +172,7 @@ def cmd_json() -> int:
 
 def cmd_install() -> int:
     missing = _check_binaries()
+    js_runtime = _detect_js_runtime()
     if missing:
         print(f"[setup] missing binaries: {', '.join(missing)}", file=sys.stderr)
         print("[setup] install manually (e.g. `apt install ffmpeg`, `pip install yt-dlp`)", file=sys.stderr)
@@ -166,6 +181,10 @@ def cmd_install() -> int:
     _scaffold_env()
     _write_setup_complete()
     has_key, backend = _have_api_key()
+    if js_runtime:
+        print(f"[setup] js runtime: {js_runtime}")
+    else:
+        print("[setup] warning: no js runtime (deno/node/qjs/bun) — YouTube frame extraction may fail")
     if has_key:
         print(f"[setup] ready. whisper backend: {backend}")
     else:

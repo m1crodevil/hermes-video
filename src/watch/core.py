@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from watch.config import get_config
-from watch.download import fetch_captions, is_url, resolve_local
+from watch.download import fetch_captions, fetch_video, is_url, resolve_local
 from watch.frames import extract_at_timestamps, get_metadata
 from watch.output import AnalysisCapabilities, FrameInfo, TranscriptSegment, WatchReport
 from watch.transcript import format_transcript, parse_json3, parse_vtt
@@ -76,11 +76,18 @@ def run(source: str, args: argparse.Namespace) -> int:
     # 1. Fetch captions for URLs, or resolve local file
     if url_source:
         print("[watch] fetching metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(source, work / "download")
+        dl = fetch_captions(source, work / "download", js_runtimes=args.js_runtimes)
         subtitle_path = dl.get("subtitle_path")
         info = dl.get("info") or {}
         video_path = dl.get("video_path")
         downloaded = dl.get("downloaded", False)
+
+        # If timestamps requested but no video downloaded, try fetching video
+        if args.timestamps and not video_path:
+            print("[watch] no video downloaded, attempting video fetch for frames…", file=sys.stderr)
+            video_dl = fetch_video(source, work / "video", js_runtimes=args.js_runtimes)
+            video_path = video_dl.get("video_path")
+            downloaded = video_dl.get("downloaded", False)
     else:
         dl = resolve_local(source)
         video_path = dl["video_path"]

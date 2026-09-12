@@ -44,6 +44,8 @@ def test_keyless_completed_setup_proceeds_silently(tmp_path):
     assert js["first_run"] is False
     assert js["setup_complete"] is True
     assert js["status"] == "needs_key"
+    assert "js_runtime" in js
+    assert "js_runtime_available" in js
 
 
 def test_keyless_first_run_is_encouraged(tmp_path):

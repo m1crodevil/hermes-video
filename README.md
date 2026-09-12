@@ -61,4 +61,7 @@ python3 -m pytest tests/ -q
 - Python 3.11+
 - ffmpeg
 - yt-dlp
+- Deno, Node, QuickJS, or Bun (for YouTube video downloads; captions work without it)
 - Groq or OpenAI API key (optional, for Whisper fallback)
+
+> **Note:** yt-dlp requires an external JavaScript runtime to download YouTube video streams. Install [Deno](https://deno.com/) (recommended) to enable frame extraction. Captions still work without it.

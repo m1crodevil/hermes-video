@@ -75,7 +75,7 @@ def _read_info(info_path: Path, url: str) -> dict:
     return info
 
 
-def fetch_metadata_only(url: str, out_dir: Path) -> dict:
+def fetch_metadata_only(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -84,16 +84,19 @@ def fetch_metadata_only(url: str, out_dir: Path) -> dict:
         "yt-dlp", "--skip-download", "--write-info-json", "--no-write-subs",
         "--no-playlist", "-o", output_template, "--", _sanitize_url(url),
     ]
+    if js_runtimes:
+        cmd.insert(1, "--js-runtimes")
+        cmd.insert(2, js_runtimes)
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     return _read_info(out_dir / "video.info.json", url)
 
 
-def fetch_captions(url: str, out_dir: Path) -> dict:
+def fetch_captions(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    info = fetch_metadata_only(url, out_dir)
+    info = fetch_metadata_only(url, out_dir, js_runtimes=js_runtimes)
     best_lang = info.get("language", "en") or "en"
     if best_lang not in VALID_LANG_CODES:
         best_lang = "en"
@@ -116,6 +119,9 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "-o", output_template,
         "--", _sanitize_url(url),
     ]
+    if js_runtimes:
+        cmd.insert(1, "--js-runtimes")
+        cmd.insert(2, js_runtimes)
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
     subtitle = _pick_subtitle(out_dir, best_lang)
 
@@ -125,4 +131,39 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "info": info or {"url": url},
         "detected_language": best_lang,
         "downloaded": False,
+    }
+
+
+def fetch_video(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
+    """Download the actual video file. Requires a JS runtime for YouTube."""
+    if shutil.which("yt-dlp") is None:
+        raise SystemExit("yt-dlp is not installed")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    output_template = str(out_dir / "video.%(ext)s")
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "--ignore-errors",
+        "-o", output_template,
+        "--", _sanitize_url(url),
+    ]
+    if js_runtimes:
+        cmd.insert(1, "--js-runtimes")
+        cmd.insert(2, js_runtimes)
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=300)
+
+    # Find the downloaded video file
+    video_path = None
+    for ext in VIDEO_EXTS:
+        candidates = list(out_dir.glob(f"video*{ext}"))
+        if candidates:
+            video_path = str(candidates[0])
+            break
+
+    return {
+        "video_path": video_path,
+        "subtitle_path": None,
+        "info": {"url": url},
+        "downloaded": video_path is not None,
     }
