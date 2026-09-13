@@ -6,13 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure package imports work when executed directly or via symlink
-_src = Path(__file__).resolve().parent.parent
-_pkg = Path(__file__).resolve().parent
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-if str(_pkg) in sys.path:
-    sys.path.remove(str(_pkg))
+from watch.core import run_watch
 
 
 def main() -> int:
@@ -27,16 +21,28 @@ def main() -> int:
     parser.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     parser.add_argument("--keep-video", action="store_true", help="Keep downloaded video")
     parser.add_argument("--cookies", action="store_true", help="Use Chrome cookies")
+    parser.add_argument("--cookies-file", type=str, default=None, help="Path to cookies file")
     parser.add_argument("--no-whisper", action="store_true", help="Disable Whisper fallback")
     parser.add_argument("--whisper", choices=["groq", "openai"], default=None, help="Whisper backend")
     parser.add_argument("--output", choices=["markdown", "json", "both"], default="both", help="Output format")
     args = parser.parse_args()
 
-    # Identity banner: make it unambiguous which skill binary is running.
-    print("[watch] Python /watch skill (hermes-video v2.3.0)", file=sys.stderr)
+    out_dir = Path(args.out_dir) if args.out_dir else None
 
-    from watch.core import run
-    return run(args.source, args)
+    report = run_watch(
+        source=args.source,
+        out_dir=out_dir,
+        timestamps_str=args.timestamps,
+        use_cookies=args.cookies,
+        cookies_file=args.cookies_file,
+        no_whisper=args.no_whisper,
+        output_format=args.output,
+        keep_video=args.keep_video,
+        resolution=args.resolution,
+    )
+
+    print(f"[watch] report written to {report.working_dir}/report.json", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

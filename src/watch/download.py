@@ -158,10 +158,14 @@ def download_video(
             video_path = str(candidates[0])
             break
 
+    info = info or {"url": url}
     return {
         "video_path": video_path,
         "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
+        "info": info,
         "detected_language": best_lang,
         "downloaded": video_path is not None,
+        "source": info.get("url") or url,
+        "uploader": info.get("uploader"),
+        "title": info.get("title"),
     }

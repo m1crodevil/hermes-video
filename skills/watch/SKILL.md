@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "2.3.0"
+version: "3.0.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts frames with ffmpeg, pulls the transcript from captions (or Whisper fallback), and hands the result to your agent.
 argument-hint: "<video-url-or-path> [--timestamps T1,T2,...]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -19,11 +19,11 @@ metadata:
 
 # /watch (Python)
 
-**Version:** 2.3.0  
+**Version:** 3.0.0  
 **Implementation:** Python (`hermes-video`)  
-**Not `/watch2`:** `/watch2` is the Rust implementation from `hermes-video-rs`. Do not confuse the two.
+**Not `/watch2`:** `/watch2` is the Rust implementation from `hermes-video-rs`. They are functionally equivalent but written in different languages.
 
-Downloads a video, pulls its transcript, extracts frames at the timestamps the agent asks for, and hands everything to the agent.
+Downloads a video, pulls its transcript, detects scenes, and extracts frames only when the agent asks for specific timestamps.
 
 ## When to use /watch
 
@@ -40,16 +40,7 @@ python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> [--timestamps 0:30,1:45] [--
 ```
 
 - If `--timestamps` is provided, frames are extracted at those timestamps.
-- If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
-- If no video is available (e.g. transcript-only mode), only the transcript is returned.
-
-### Execution identity
-
-When this skill runs, the CLI prints a startup banner identifying it as the **Python `/watch` skill**. If you ever see output prefixed with `[watch2]` or referencing `hermes-video-rs`, the wrong binary/skill was used.
-
-### Behavior when `/watch <url>` is invoked without timestamps
-
-The Python `/watch` skill defaults to auto-selecting start, middle, and end timestamps when the video file can be obtained. It does not wait for the user to provide timestamps before extracting frames. Captions-only output only occurs when the video stream itself is unavailable.
+- If `--timestamps` is omitted, no frames are extracted. The agent must run a second pass with `--timestamps`.
 
 ## Setup preflight
 
@@ -68,14 +59,23 @@ Branch on JSON fields:
 1. Download video + captions in a single yt-dlp pass (JSON3/VTT)
 2. Parse transcript
 3. Whisper fallback if no captions and API key available
-4. Extract frames at `--timestamps` with `ffmpeg`
-5. Emit `report.json` + Markdown
+4. Detect scene boundaries with `ffmpeg scdet`
+5. Extract frames at `--timestamps` with `ffmpeg`
+6. Emit `report.json` + Markdown
 
-## Recent fixes (v2.3.0)
+## CLI flags
 
-- Single-pass yt-dlp download with network opts (mweb client, Deno JS runtime) to avoid 429 on captions.
-- Whisper HTTP client switched from `urllib.request` to `requests` with proper headers; fixes Cloudflare 403/1010.
-- `.env` / API key handling consolidated into `config.py`.
+| Flag | Description |
+|------|-------------|
+| `--timestamps` | Comma-separated timestamps for frame extraction |
+| `--resolution` | Frame width in pixels (default: 512) |
+| `--out-dir` | Working directory (default: tmp) |
+| `--keep-video` | Keep downloaded video |
+| `--cookies` | Use Chrome cookies |
+| `--cookies-file` | Path to cookies file |
+| `--no-whisper` | Disable Whisper fallback |
+| `--whisper` | Whisper backend: `groq` or `openai` |
+| `--output` | Output format: `json`, `markdown`, or `both` |
 
 ## Requirements
 

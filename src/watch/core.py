@@ -1,7 +1,6 @@
-"""Core single-pass pipeline (parity with hermes-video-rs)."""
+"""Core /watch pipeline (Rust parity)."""
 from __future__ import annotations
 
-import argparse
 import json
 import shutil
 import sys
@@ -9,190 +8,161 @@ import tempfile
 from pathlib import Path
 
 from watch.download import download_video, is_url, resolve_local
-from watch.frames import extract_at_timestamps, get_metadata
-from watch.output import AnalysisCapabilities, FrameInfo, TranscriptSegment, WatchReport
+from watch.frames import detect_scenes, extract_frames
+from watch.output import WatchReport
 from watch.transcript import format_transcript, parse_json3, parse_vtt
-from watch.whisper import load_api_key, transcribe_video
+from watch.whisper import transcribe_video
 
 
-def _cleanup(work: Path, video_path: str | None, keep_video: bool) -> None:
-    if keep_video or not video_path:
-        return
-    vp = Path(video_path)
-    if vp.exists() and vp.is_relative_to(work):
+def _transcript_from_subtitle(subtitle_path: str) -> tuple[list[dict], str]:
+    path = Path(subtitle_path)
+    if path.suffix == ".json3":
+        return parse_json3(subtitle_path), "captions"
+    return parse_vtt(subtitle_path), "captions"
+
+
+def _transcript_from_whisper(video_path: str, out_dir: Path) -> tuple[list[dict], str]:
+    audio_out = out_dir / "audio.mp3"
+    segments, _ = transcribe_video(video_path, audio_out)
+    return segments, "whisper"
+
+
+def _get_transcript(result: dict, out_dir: Path, no_whisper: bool = False) -> tuple[list[dict], str]:
+    if result.get("subtitle_path"):
         try:
-            mb = vp.stat().st_size / (1024 * 1024)
-            vp.unlink()
-            print(f"[watch] cleaned up video ({mb:.0f} MB)", file=sys.stderr)
-        except OSError:
-            pass
+            return _transcript_from_subtitle(result["subtitle_path"])
+        except Exception as exc:
+            print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
+            if no_whisper:
+                return [], "none"
+
+    if result.get("video_path") and not no_whisper:
+        try:
+            return _transcript_from_whisper(result["video_path"], out_dir)
+        except Exception as exc:
+            print(f"[watch] whisper failed: {exc}", file=sys.stderr)
+
+    return [], "none"
 
 
-def _parse_timestamps(text: str | None) -> list[float]:
-    if not text:
+def _language_from_segments(segments: list[dict]) -> str | None:
+    if not segments:
+        return None
+    # Simple heuristic: use first segment text to detect via naive check
+    text = " ".join(seg.get("text", "") for seg in segments[:20]).lower()
+    # Common Indonesian words heuristic
+    id_markers = ["yang", "dan", "di", "ini", "itu", "dengan", "untuk", "dari", "dalam", "pada"]
+    en_markers = ["the", "and", "for", "with", "you", "that", "this", "from", "have", "are"]
+    id_score = sum(1 for w in id_markers if w in text)
+    en_score = sum(1 for w in en_markers if w in text)
+    if id_score > en_score:
+        return "id"
+    if en_score > id_score:
+        return "en"
+    return None
+
+
+def _parse_timestamps(timestamps_str: str | None) -> list[float]:
+    """Parse comma-separated timestamps like '00:30,01:15,02:45'."""
+    if not timestamps_str:
         return []
-    timestamps: list[float] = []
-    for part in text.split(","):
+    timestamps = []
+    for part in timestamps_str.split(","):
         part = part.strip()
         if not part:
             continue
+        # Try as seconds first
         try:
-            if ":" in part:
-                pieces = part.split(":")
-                if len(pieces) == 2:
-                    m, s = pieces
-                    timestamps.append(float(m) * 60 + float(s))
-                elif len(pieces) == 3:
-                    h, m, s = pieces
-                    timestamps.append(float(h) * 3600 + float(m) * 60 + float(s))
-            else:
-                timestamps.append(float(part))
+            timestamps.append(float(part))
+            continue
         except ValueError:
             pass
+        # Try as HH:MM:SS or MM:SS
+        chunks = part.split(":")
+        if len(chunks) == 2:
+            timestamps.append(int(chunks[0]) * 60 + float(chunks[1]))
+        elif len(chunks) == 3:
+            timestamps.append(int(chunks[0]) * 3600 + int(chunks[1]) * 60 + float(chunks[2]))
     return timestamps
 
 
-def _default_timestamps(duration: float, count: int = 3) -> list[float]:
-    """Return evenly spaced timestamps across the video duration."""
-    if duration <= 0:
-        return []
-    if count < 2:
-        return [0.0]
-    return [i * duration / (count - 1) for i in range(count)]
+def run_watch(
+    source: str,
+    out_dir: Path | None = None,
+    timestamps_str: str | None = None,
+    use_cookies: bool = False,
+    cookies_file: str | None = None,
+    no_whisper: bool = False,
+    output_format: str = "both",
+    keep_video: bool = False,
+    resolution: int = 512,
+    detect_scenes_flag: bool = False,
+) -> WatchReport:
+    """Run the /watch pipeline."""
+    if out_dir is None:
+        out_dir = Path(tempfile.mkdtemp(prefix="watch-"))
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    report = WatchReport(working_dir=str(out_dir))
 
-def _fmt_duration(seconds: float) -> str:
-    total = int(round(seconds))
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
-
-
-def run(source: str, args: argparse.Namespace) -> int:
-    work: Path = Path(args.out_dir).expanduser().resolve() if args.out_dir else Path(tempfile.mkdtemp(prefix="watch-"))
-    work.mkdir(parents=True, exist_ok=True)
-    print(f"[watch] working dir: {work}", file=sys.stderr)
-
-    url_source = is_url(source)
-    subtitle_path: str | None = None
-    info: dict = {}
-    video_path: str | None = None
-    downloaded = False
-
-    # 1. Download / resolve local
-    if url_source:
-        print("[watch] fetching video + captions via yt-dlp…", file=sys.stderr)
-        dl = download_video(source, work / "download", use_cookies=args.cookies)
-        subtitle_path = dl.get("subtitle_path")
-        info = dl.get("info") or {}
-        video_path = dl.get("video_path")
-        downloaded = dl.get("downloaded", False)
+    # Stage 1: resolve source
+    if is_url(source):
+        result = download_video(source, out_dir, use_cookies=use_cookies, cookies_file=cookies_file)
     else:
-        dl = resolve_local(source)
-        video_path = dl["video_path"]
-        info = dl.get("info") or {}
+        result = resolve_local(source)
 
-    # 2. Parse transcript
-    transcript: list[TranscriptSegment] = []
-    transcript_source = "none"
-    if subtitle_path:
+    report.title = result.get("title") or result.get("info", {}).get("title") or Path(source).name
+    report.source = result.get("source") or source
+    report.uploader = result.get("uploader") or result.get("info", {}).get("uploader")
+    if result.get("info", {}).get("duration") is not None:
+        report.duration = float(result["info"]["duration"])
+    report.language = result.get("detected_language") or result.get("info", {}).get("language")
+
+    video_path = result.get("video_path")
+
+    # Stage 2: transcript (and scene detection if video available)
+    segments, transcript_source = _get_transcript(result, out_dir, no_whisper=no_whisper)
+    report.transcript = segments
+    report.transcript_source = transcript_source
+
+    if not report.language:
+        report.language = _language_from_segments(segments)
+
+    # Stage 3: scene detection (optional — not run by default to match Rust parity/performance)
+    if video_path and detect_scenes_flag:
         try:
-            raw = parse_json3(subtitle_path) if subtitle_path.endswith(".json3") else parse_vtt(subtitle_path)
-            transcript = [TranscriptSegment(start=s["start"], end=s["end"], text=s["text"], words=s.get("words")) for s in raw]
-            transcript_source = "captions"
-            print(f"[watch] parsed {len(transcript)} transcript segments from {subtitle_path}", file=sys.stderr)
+            report.scene_boundaries = detect_scenes(video_path, duration=report.duration)
         except Exception as exc:
-            print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
+            print(f"[watch] scene detection failed: {exc}", file=sys.stderr)
+            report.warnings.append(f"scene detection failed: {exc}")
 
-    # 3. Get metadata
-    duration = 0.0
-    width = height = None
-    codec = None
-    has_audio = False
-    meta = None
-    if video_path:
-        meta = get_metadata(video_path)
-        duration = meta.get("duration", 0.0)
-        width = meta.get("width")
-        height = meta.get("height")
-        codec = meta.get("codec")
-        has_audio = meta.get("has_audio", False)
+    # Stage 4: frame extraction (only if timestamps requested)
+    timestamps = _parse_timestamps(timestamps_str)
+    if video_path and timestamps:
+        try:
+            report.frames = extract_frames(video_path, timestamps, out_dir / "frames", width=resolution)
+            report.analysis_capabilities["frame_extraction"] = True
+            report.analysis_capabilities["visual_verification"] = True
+        except Exception as exc:
+            print(f"[watch] frame extraction failed: {exc}", file=sys.stderr)
+            report.warnings.append(f"frame extraction failed: {exc}")
 
-    # Fallback language: use the subtitle file's language if info.json has none
-    if not info.get("language") and subtitle_path:
-        detected = dl.get("detected_language", "en")
-        if detected:
-            info["language"] = detected
+    report.analysis_capabilities["transcript"] = bool(segments)
+    report.analysis_capabilities["scene_detection"] = bool(report.scene_boundaries)
 
-    # 4. Whisper fallback if no transcript
-    if not transcript and not args.no_whisper and video_path and has_audio:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+    # Write outputs
+    if output_format in ("json", "both"):
+        report.write_json(out_dir / "report.json")
+    if output_format in ("markdown", "both"):
+        report.write_markdown(out_dir / "report.md")
+
+    # Cleanup
+    if not keep_video and video_path and is_url(source):
+        video_file = Path(video_path)
+        if video_file.exists():
             try:
-                raw_segments, used_backend = transcribe_video(video_path, work / "audio.mp3", backend=backend, api_key=api_key)
-                transcript = [TranscriptSegment(start=s["start"], end=s["end"], text=s["text"]) for s in raw_segments]
-                transcript_source = f"whisper ({used_backend})"
-            except Exception as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                video_file.unlink()
+            except OSError:
+                pass
 
-    # 5. Extract frames at timestamps
-    frames: list[FrameInfo] = []
-    frame_meta: dict = {"engine": "none", "selected_count": 0}
-    timestamps = _parse_timestamps(args.timestamps)
-    # Auto-pick default timestamps if none provided and we have a video + duration
-    if not timestamps and video_path and duration > 0:
-        timestamps = _default_timestamps(duration)
-        print(f"[watch] auto timestamps: {timestamps}", file=sys.stderr)
-    if timestamps and video_path:
-        raw_frames, frame_meta = extract_at_timestamps(
-            video_path,
-            work / "frames",
-            timestamps,
-            resolution=args.resolution,
-        )
-        for f in raw_frames:
-            ts = f["timestamp_seconds"]
-            frames.append(FrameInfo(path=f["path"], timestamp=ts, timestamp_fmt=_fmt_duration(ts)))
-
-    # 6. Build report
-    title = info.get("title") or source
-    has_transcript = bool(transcript)
-    has_frames = bool(frames)
-    video_access = "denied" if url_source and not video_path else ("available" if url_source else "local")
-
-    report = WatchReport(
-        title=title,
-        source=source,
-        uploader=info.get("uploader"),
-        language=info.get("language"),
-        frames=frames,
-        transcript=transcript,
-        transcript_source=transcript_source,
-        video_access=video_access,
-        analysis_capabilities=AnalysisCapabilities(
-            transcript=has_transcript,
-            frame_extraction=has_frames,
-            visual_verification=has_frames,
-        ),
-        duration=duration,
-        working_dir=str(work),
-        warnings=[],
-    )
-
-    # 7. Cleanup
-    _cleanup(work, video_path, args.keep_video)
-
-    # 8. Output
-    if args.output in ("markdown", "both"):
-        print(report.to_markdown())
-    if args.output in ("json", "both"):
-        json_path = work / "report.json"
-        report.to_json_file(json_path)
-        if args.output == "json":
-            print(f"Report written to: {json_path}")
-        else:
-            print(f"\nReport JSON: `{json_path}`")
-
-    return 0
+    return report

@@ -1,79 +1,76 @@
-"""Simplified output models (feature-parity with hermes-video-rs)."""
+"""Minimal report output for /watch (Rust parity)."""
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
-
-
-@dataclass
-class TranscriptSegment:
-    start: float
-    end: float
-    text: str
-    words: list[dict] | None = None
-
-
-@dataclass
-class FrameInfo:
-    path: str
-    timestamp: float
-    timestamp_fmt: str
-
-
-@dataclass
-class AnalysisCapabilities:
-    transcript: bool = True
-    frame_extraction: bool = False
-    visual_verification: bool = False
+from typing import Any
 
 
 @dataclass
 class WatchReport:
-    title: str
-    source: str
-    uploader: str | None
-    language: str | None
-    frames: list[FrameInfo]
-    transcript: list[TranscriptSegment]
-    transcript_source: str
-    video_access: str
-    analysis_capabilities: AnalysisCapabilities
-    duration: float
-    working_dir: str
-    warnings: list[str]
+    title: str = ""
+    source: str = ""
+    uploader: str | None = None
+    language: str | None = None
+    duration: float | None = None
+    transcript_source: str = ""
+    video_access: str = "available"
+    transcript: list[dict] = field(default_factory=list)
+    scene_boundaries: list[dict] = field(default_factory=list)
+    frames: list[dict] = field(default_factory=list)
+    analysis_capabilities: dict[str, bool] = field(default_factory=dict)
+    working_dir: str = ""
+    warnings: list[str] = field(default_factory=list)
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def to_json_file(self, path: Path) -> None:
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
+    def write_json(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
 
-    def to_markdown(self) -> str:
+    def write_markdown(self, path: Path) -> None:
         lines = [
-            f"# {self.title or 'Video Analysis'}",
-            f"**Source:** {self.source}",
-            f"**Duration:** {self.duration:.1f}s",
+            f"# {self.title or 'Video Analysis'}\n",
+            f"**Source:** {self.source}\n",
+            f"**Uploader:** {self.uploader or 'N/A'}\n",
+            f"**Language:** {self.language or 'N/A'}\n",
+            f"**Duration:** {self._fmt_duration()}\n",
+            f"**Transcript source:** {self.transcript_source}\n",
+            f"**Video access:** {self.video_access}\n\n",
+            "## Summary\n\n",
+            self._summary_text(),
+            "\n\n## Transcript\n\n",
         ]
-        if self.uploader:
-            lines.append(f"**Uploader:** {self.uploader}")
-        if self.language:
-            lines.append(f"**Language:** {self.language}")
-        lines.append(f"**Transcript source:** {self.transcript_source}")
-        lines.append(f"**Video access:** {self.video_access}")
-        lines.append("## Frames")
-        if self.frames:
-            for f in self.frames:
-                lines.append(f"- [{f.timestamp_fmt}] `{f.path}`")
-        else:
-            lines.append("_No frames extracted._")
-        lines.append("## Transcript")
-        if self.transcript:
-            for seg in self.transcript:
-                lines.append(f"[{seg.start:.1f}s] {seg.text}")
-        else:
-            lines.append("_No transcript._")
+        for seg in self.transcript:
+            stamp = self._fmt_time(seg.get("start", 0))
+            lines.append(f"[{stamp}] {seg.get('text', '')}\n")
+        path.write_text("".join(lines), encoding="utf-8")
+
+    def _fmt_duration(self) -> str:
+        if self.duration is None:
+            return "N/A"
+        total = int(self.duration)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        total = int(seconds)
+        m, s = divmod(total, 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+    def _summary_text(self) -> str:
+        parts = [
+            f"Transcript: {len(self.transcript)} segments",
+            f"Scenes: {len(self.scene_boundaries)} boundaries",
+        ]
         if self.warnings:
-            lines.append("## Warnings")
-            lines.extend(f"- {w}" for w in self.warnings)
-        return "\n".join(lines)
+            parts.append(f"Warnings: {len(self.warnings)}")
+        return "; ".join(parts)
