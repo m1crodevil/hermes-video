@@ -33,8 +33,8 @@ ln -s "$(pwd)/hermes-video/skills/watch" ~/.hermes/skills/content-creation/watch
 
 The pipeline is single-pass and agent-driven:
 
-1. Fetch captions + metadata via `yt-dlp` (JSON3/VTT)
-2. Fallback to Whisper if no captions and a Groq/OpenAI API key is set
+1. Download video + captions in one `yt-dlp` pass (JSON3/VTT)
+2. Parse transcript; fallback to Whisper if no captions and a Groq/OpenAI API key is set
 3. Extract frames at `--timestamps` (or auto-picked defaults) with `ffmpeg`
 4. Emit `report.json` + Markdown
 
@@ -45,9 +45,7 @@ Pass `--no-whisper` to skip transcription fallback.
 ```
 Video URL / local path
     ↓
-Fetch captions + metadata (yt-dlp)
-    ↓
-Fetch video if needed for frame extraction
+Download video + captions (yt-dlp)
     ↓
 Whisper fallback (if needed)
     ↓

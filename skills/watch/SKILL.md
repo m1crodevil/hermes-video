@@ -65,11 +65,17 @@ Branch on JSON fields:
 
 ## Pipeline
 
-1. Download captions + metadata via `yt-dlp` (JSON3/VTT)
+1. Download video + captions in a single yt-dlp pass (JSON3/VTT)
 2. Parse transcript
 3. Whisper fallback if no captions and API key available
 4. Extract frames at `--timestamps` with `ffmpeg`
 5. Emit `report.json` + Markdown
+
+## Recent fixes (v2.3.0)
+
+- Single-pass yt-dlp download with network opts (mweb client, Deno JS runtime) to avoid 429 on captions.
+- Whisper HTTP client switched from `urllib.request` to `requests` with proper headers; fixes Cloudflare 403/1010.
+- `.env` / API key handling consolidated into `config.py`.
 
 ## Requirements
 

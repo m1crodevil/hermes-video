@@ -16,13 +16,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from watch.config import CONFIG_DIR, CONFIG_FILE, read_env_key
+
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 # yt-dlp needs an external JS runtime to download YouTube video streams.
 # Captions still work without it, but frames require it. Deno is recommended.
 JS_RUNTIMES = ["deno", "node", "qjs", "bun"]
-CONFIG_DIR = Path.home() / ".config" / "watch"
-CONFIG_FILE = CONFIG_DIR / ".env"
 
 ENV_TEMPLATE = """# /watch API configuration
 #
@@ -42,39 +42,16 @@ OPENAI_API_KEY=
 # API key helpers
 # ---------------------------------------------------------------------------
 
-def _read_env_key(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value and value.strip():
-        return value.strip()
-    if not CONFIG_FILE.exists():
-        return None
-    try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, raw = line.partition("=")
-            if key.strip() != name:
-                continue
-            raw = raw.strip()
-            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                raw = raw[1:-1]
-            return raw or None
-    except OSError:
-        return None
-    return None
-
-
 def _have_api_key() -> tuple[bool, str | None]:
-    if _read_env_key("GROQ_API_KEY"):
+    if read_env_key("GROQ_API_KEY"):
         return True, "groq"
-    if _read_env_key("OPENAI_API_KEY"):
+    if read_env_key("OPENAI_API_KEY"):
         return True, "openai"
     return False, None
 
 
 def is_first_run() -> bool:
-    return _read_env_key("SETUP_COMPLETE") != "true"
+    return read_env_key("SETUP_COMPLETE") != "true"
 
 
 # ---------------------------------------------------------------------------

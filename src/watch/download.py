@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-"""Fetch captions/metadata and/or video via yt-dlp, or resolve a local file."""
+"""Fetch video + subtitles via yt-dlp in a single pass."""
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from watch.config import ytdlp_network_opts
+
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
-VALID_LANG_CODES = {
-    "en", "id", "ms", "jv", "su", "ar", "zh", "ja", "ko", "es", "pt",
-    "fr", "de", "it", "ru", "hi", "th", "vi", "tl", "tr", "pl", "nl",
-    "sv", "da", "no", "fi",
-}
 SLEEP_SUBTITLES = "3"
 
 
@@ -57,6 +53,7 @@ def _pick_subtitle(out_dir: Path, preferred_lang: str = "en") -> Path | None:
 
 
 def _read_info(info_path: Path, url: str) -> dict:
+    import json
     info: dict = {}
     if info_path.exists():
         try:
@@ -75,12 +72,13 @@ def _read_info(info_path: Path, url: str) -> dict:
     return info
 
 
-def _base_ytdlp_cmd(output_template: str, url: str, js_runtimes: str | None = None, extra_args: list[str] | None = None) -> list[str]:
+def _base_ytdlp_cmd(output_template: str, url: str, extra_args: list[str] | None = None) -> list[str]:
     cmd = [
-        "yt-dlp", "--no-playlist",
+        "yt-dlp",
+        "--no-playlist",
+        "--ignore-errors",
+        "--sleep-subtitles", SLEEP_SUBTITLES,
     ]
-    if js_runtimes:
-        cmd.extend(["--js-runtimes", js_runtimes])
     if extra_args:
         cmd.extend(extra_args)
     cmd.extend([
@@ -94,50 +92,44 @@ def _run_ytdlp(cmd: list[str], timeout: int = 300) -> None:
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=timeout)
 
 
-def fetch_captions(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
-    """Download metadata + subtitles (without video)."""
+def _detect_language(info: dict) -> str:
+    lang = info.get("language", "en") or "en"
+    if "-" in lang:
+        lang = lang.split("-")[0]
+    return lang
+
+
+def download_video(
+    url: str,
+    out_dir: Path,
+    use_cookies: bool = False,
+    cookies_file: str | None = None,
+) -> dict:
+    """Download video + subtitles in one yt-dlp pass."""
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed")
-    out_dir.mkdir(parents=True, exist_ok=True)
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
+
+    network_opts = ytdlp_network_opts(use_cookies, cookies_file)
+
     extra = [
-        "--skip-download",
-        "-N", "4",
+        "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
+        "--merge-output-format", "mp4",
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
         "--sub-langs", "en.*",
         "--sub-format", "json3/best",
-        "--sleep-subtitles", SLEEP_SUBTITLES,
     ]
-    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes, extra_args=extra)
+
+    cmd = _base_ytdlp_cmd(output_template, url, extra_args=network_opts + extra)
     _run_ytdlp(cmd)
 
     info = _read_info(out_dir / "video.info.json", url)
-    best_lang = info.get("language", "en") or "en"
-    if best_lang not in VALID_LANG_CODES:
-        best_lang = "en"
+    best_lang = _detect_language(info)
     subtitle = _pick_subtitle(out_dir, best_lang)
-
-    return {
-        "video_path": None,
-        "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
-        "detected_language": best_lang,
-        "downloaded": False,
-    }
-
-
-def fetch_video(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict:
-    """Download the actual video file. Requires a JS runtime for YouTube."""
-    if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    output_template = str(out_dir / "video.%(ext)s")
-    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes, extra_args=["-i"])
-    _run_ytdlp(cmd)
 
     video_path = None
     for ext in VIDEO_EXTS:
@@ -148,7 +140,8 @@ def fetch_video(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict
 
     return {
         "video_path": video_path,
-        "subtitle_path": None,
-        "info": {"url": url},
+        "subtitle_path": str(subtitle) if subtitle else None,
+        "info": info or {"url": url},
+        "detected_language": best_lang,
         "downloaded": video_path is not None,
     }

@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-"""Transcribe a video via Groq or OpenAI Whisper API (stdlib only)."""
+"""Transcribe a video via Groq or OpenAI Whisper API."""
 from __future__ import annotations
 
-import io
-import json
-import mimetypes
-import os
 import shutil
-import ssl
 import subprocess
 import sys
 import time
-import urllib.error
-import uuid
 from pathlib import Path
-from urllib.request import Request, urlopen
+
+import requests
+
+from watch.config import load_api_key
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -23,43 +19,6 @@ OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 MAX_ATTEMPTS = 4
 RETRY_DELAY = 2.0
-
-
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI."""
-
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
-
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            if key.strip() != name:
-                continue
-            value = value.strip()
-            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                value = value[1:-1]
-            return value or None
-        return None
-
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
-    if preferred is not None:
-        candidates = tuple(c for c in candidates if c[1] == preferred)
-
-    for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            value = _from_dotenv(Path.home() / ".config" / "watch" / ".env", key_name)
-        if value:
-            return backend, value
-
-    return None, None
 
 
 def extract_audio(video_path: str, out_path: Path) -> Path:
@@ -83,56 +42,23 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
     return out_path
 
 
-def _build_multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, str]:
-    boundary = f"----WatchBoundary{uuid.uuid4().hex}"
-    eol = b"\r\n"
-    body = io.BytesIO()
-
-    for name, value in fields.items():
-        body.write(f"--{boundary}".encode()); body.write(eol)
-        body.write(f'Content-Disposition: form-data; name="{name}"'.encode()); body.write(eol)
-        body.write(eol)
-        body.write(str(value).encode()); body.write(eol)
-
-    mimetype = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-    body.write(f"--{boundary}".encode()); body.write(eol)
-    body.write(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode())
-    body.write(eol)
-    body.write(f"Content-Type: {mimetype}".encode()); body.write(eol)
-    body.write(eol)
-    body.write(file_path.read_bytes())
-    body.write(eol)
-    body.write(f"--{boundary}--".encode()); body.write(eol)
-
-    return body.getvalue(), boundary
-
-
 def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> dict:
-    body, boundary = _build_multipart(
-        {"model": model, "response_format": "verbose_json", "temperature": "0"},
-        audio_path,
-    )
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-    }
-    context = ssl.create_default_context()
-    request = Request(endpoint, data=body, headers=headers, method="POST")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = {"model": model, "response_format": "verbose_json", "temperature": "0"}
 
     for attempt in range(MAX_ATTEMPTS):
         try:
-            with urlopen(request, timeout=300, context=context) as response:
-                return json.loads(response.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:100] if hasattr(exc, "read") else ""
-            if 400 <= exc.code < 500 and exc.code != 429:
-                raise SystemExit(f"Whisper request failed: {exc} — {detail}")
-            if attempt == MAX_ATTEMPTS - 1:
-                raise SystemExit(f"Whisper request failed after {MAX_ATTEMPTS} attempts: {exc} — {detail}")
-            delay = RETRY_DELAY * (2 ** attempt)
-            print(f"[watch] whisper HTTP {exc.code} — retrying in {delay:.1f}s", file=sys.stderr)
-            time.sleep(delay)
-        except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as exc:
+            with audio_path.open("rb") as f:
+                files = {"file": (audio_path.name, f, "audio/mpeg")}
+                response = requests.post(endpoint, headers=headers, data=data, files=files, timeout=300)
+            if response.status_code == 429 and attempt < MAX_ATTEMPTS - 1:
+                delay = RETRY_DELAY * (2 ** attempt)
+                print(f"[watch] whisper rate limited — retrying in {delay:.1f}s", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
             if attempt == MAX_ATTEMPTS - 1:
                 raise SystemExit(f"Whisper request failed after {MAX_ATTEMPTS} attempts: {exc}")
             delay = RETRY_DELAY * (attempt + 1)
@@ -143,7 +69,6 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
 
 
 def _segments_from_response(data: dict) -> list[dict]:
-    """Convert Whisper verbose_json into {start, end, text} segments."""
     out = [
         {
             "start": round(float(seg.get("start") or 0.0), 2),
@@ -204,18 +129,3 @@ def transcribe_video(
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
-        raise SystemExit(2)
-
-    video = sys.argv[1]
-    audio_out = Path(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("--") else Path("audio.mp3")
-    backend_override = None
-    if "--backend" in sys.argv:
-        backend_override = sys.argv[sys.argv.index("--backend") + 1]
-
-    segments, backend = transcribe_video(video, audio_out, backend=backend_override)
-    print(json.dumps({"backend": backend, "segments": segments}, indent=2))
