@@ -62,7 +62,7 @@ def _read_info(info_path: Path, url: str) -> dict:
                 "title": raw.get("title"),
                 "uploader": raw.get("uploader") or raw.get("channel"),
                 "duration": raw.get("duration"),
-                "language": raw.get("language", "en"),
+                "language": raw.get("language"),
                 "description": (raw.get("description") or "")[:500],
                 "url": raw.get("webpage_url") or url,
             }
@@ -92,10 +92,23 @@ def _run_ytdlp(cmd: list[str], timeout: int = 300) -> None:
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, timeout=timeout)
 
 
-def _detect_language(info: dict) -> str:
-    lang = info.get("language", "en") or "en"
+def _detect_language(info: dict, subtitle_path: str | None = None) -> str:
+    """Return best language code from info.json or existing subtitle file."""
+    # Prefer yt-dlp reported language first
+    lang = info.get("language") or "en"
     if "-" in lang:
         lang = lang.split("-")[0]
+
+    # If no language in info.json, try to infer from subtitle filename
+    if not subtitle_path:
+        return lang
+
+    name = Path(subtitle_path).name.lower()
+    for code in ("id", "ms", "jv", "su", "ar", "zh", "ja", "ko", "es", "pt",
+                 "fr", "de", "it", "ru", "hi", "th", "vi", "tl", "tr", "pl",
+                 "nl", "sv", "da", "no", "fi"):
+        if f".{code}." in name or f".{code}-" in name:
+            return code
     return lang
 
 
@@ -120,7 +133,7 @@ def download_video(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", "en.*,id.*,ms.*,jv.*,su.*,ar.*,zh.*,ja.*,ko.*,es.*,pt.*,fr.*,de.*,it.*,ru.*,hi.*,th.*,vi.*,tl.*,tr.*,pl.*,nl.*,sv.*,da.*,no.*,fi.*",
         "--sub-format", "json3/best",
     ]
 
@@ -130,6 +143,13 @@ def download_video(
     info = _read_info(out_dir / "video.info.json", url)
     best_lang = _detect_language(info)
     subtitle = _pick_subtitle(out_dir, best_lang)
+
+    # Fallback: if detected language failed, try any available subtitle
+    if not subtitle:
+        subtitle = _pick_subtitle(out_dir, "en")
+
+    # If language wasn't in info.json, infer from the actual subtitle file
+    best_lang = _detect_language(info, str(subtitle) if subtitle else None)
 
     video_path = None
     for ext in VIDEO_EXTS:

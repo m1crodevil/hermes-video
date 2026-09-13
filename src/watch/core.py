@@ -120,6 +120,12 @@ def run(source: str, args: argparse.Namespace) -> int:
         codec = meta.get("codec")
         has_audio = meta.get("has_audio", False)
 
+    # Fallback language: use the subtitle file's language if info.json has none
+    if not info.get("language") and subtitle_path:
+        detected = dl.get("detected_language", "en")
+        if detected:
+            info["language"] = detected
+
     # 4. Whisper fallback if no transcript
     if not transcript and not args.no_whisper and video_path and has_audio:
         backend, api_key = load_api_key(args.whisper)
