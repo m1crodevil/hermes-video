@@ -5,6 +5,14 @@ import argparse
 import sys
 from pathlib import Path
 
+# Ensure package imports work when executed directly or via symlink
+_src = Path(__file__).resolve().parent.parent
+_pkg = Path(__file__).resolve().parent
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+if str(_pkg) in sys.path:
+    sys.path.remove(str(_pkg))
+
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -29,6 +37,9 @@ def main() -> int:
     os.umask(0o077)
     parser = _build_parser()
     args = parser.parse_args()
+
+    # Identity banner: make it unambiguous which skill binary is running.
+    print("[watch] Python /watch skill (hermes-video v2.3.0)", file=sys.stderr)
 
     # Lazy import so module-level failures in old pipeline do not block new CLI
     from watch.core import run

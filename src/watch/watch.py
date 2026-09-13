@@ -6,7 +6,11 @@ from pathlib import Path
 
 # When run directly from skills/watch/scripts/, ensure src/ is on path
 _src = Path(__file__).resolve().parent.parent  # src/watch -> src
-sys.path.insert(0, str(_src))
+_pkg = Path(__file__).resolve().parent
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+if str(_pkg) in sys.path:
+    sys.path.remove(str(_pkg))
 
 from watch.cli import main  # noqa: E402
 

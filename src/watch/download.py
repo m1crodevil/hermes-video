@@ -75,12 +75,14 @@ def _read_info(info_path: Path, url: str) -> dict:
     return info
 
 
-def _base_ytdlp_cmd(output_template: str, url: str, js_runtimes: str | None = None) -> list[str]:
+def _base_ytdlp_cmd(output_template: str, url: str, js_runtimes: str | None = None, extra_args: list[str] | None = None) -> list[str]:
     cmd = [
         "yt-dlp", "--no-playlist",
     ]
     if js_runtimes:
         cmd.extend(["--js-runtimes", js_runtimes])
+    if extra_args:
+        cmd.extend(extra_args)
     cmd.extend([
         "-o", output_template,
         "--", _sanitize_url(url),
@@ -99,7 +101,7 @@ def fetch_captions(url: str, out_dir: Path, js_runtimes: str | None = None) -> d
     out_dir.mkdir(parents=True, exist_ok=True)
 
     output_template = str(out_dir / "video.%(ext)s")
-    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes) + [
+    extra = [
         "--skip-download",
         "-N", "4",
         "--write-info-json",
@@ -109,6 +111,7 @@ def fetch_captions(url: str, out_dir: Path, js_runtimes: str | None = None) -> d
         "--sub-format", "json3/best",
         "--sleep-subtitles", SLEEP_SUBTITLES,
     ]
+    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes, extra_args=extra)
     _run_ytdlp(cmd)
 
     info = _read_info(out_dir / "video.info.json", url)
@@ -133,15 +136,7 @@ def fetch_video(url: str, out_dir: Path, js_runtimes: str | None = None) -> dict
     out_dir.mkdir(parents=True, exist_ok=True)
 
     output_template = str(out_dir / "video.%(ext)s")
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "-i",
-        "-o", output_template,
-    ]
-    if js_runtimes:
-        cmd.extend(["--js-runtimes", js_runtimes])
-    cmd.extend(["--", _sanitize_url(url)])
+    cmd = _base_ytdlp_cmd(output_template, url, js_runtimes=js_runtimes, extra_args=["-i"])
     _run_ytdlp(cmd)
 
     video_path = None

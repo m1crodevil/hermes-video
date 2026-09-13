@@ -17,7 +17,11 @@ metadata:
     requires_toolsets: [terminal]
 ---
 
-# /watch
+# /watch (Python)
+
+**Version:** 2.3.0  
+**Implementation:** Python (`hermes-video`)  
+**Not `/watch2`:** `/watch2` is the Rust implementation from `hermes-video-rs`. Do not confuse the two.
 
 Downloads a video, pulls its transcript, extracts frames at the timestamps the agent asks for, and hands everything to the agent.
 
@@ -29,6 +33,8 @@ Downloads a video, pulls its transcript, extracts frames at the timestamps the a
 
 ## Usage
 
+**Always invoke the Python `/watch` skill through the skill's own `cli.py`. Never call `watch2` or any other binary directly.**
+
 ```bash
 python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> [--timestamps 0:30,1:45] [--resolution 512] [--output json|markdown|both]
 ```
@@ -36,6 +42,10 @@ python3 "${SKILL_DIR}/scripts/cli.py" <url-or-path> [--timestamps 0:30,1:45] [--
 - If `--timestamps` is provided, frames are extracted at those timestamps.
 - If `--timestamps` is omitted, the pipeline auto-selects 3 evenly-spaced timestamps (start, middle, end) when the video is available.
 - If no video is available (e.g. transcript-only mode), only the transcript is returned.
+
+### Execution identity
+
+When this skill runs, the CLI prints a startup banner identifying it as the **Python `/watch` skill**. If you ever see output prefixed with `[watch2]` or referencing `hermes-video-rs`, the wrong binary/skill was used.
 
 ### Behavior when `/watch <url>` is invoked without timestamps
 
