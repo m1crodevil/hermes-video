@@ -42,6 +42,7 @@ def main() -> int:
     )
 
     print(f"[watch] report written to {report.working_dir}/report.json", file=sys.stderr)
+    print(f"[watch] extracted {len(report.frames)} frames", file=sys.stderr)
     return 0
 
 

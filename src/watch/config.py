@@ -15,11 +15,12 @@ def read_env_key(name: str) -> str | None:
     if value and value.strip():
         return value.strip()
 
-    if not CONFIG_FILE.exists():
+    config_file = Path.home() / ".config" / "watch" / ".env"
+    if not config_file.exists():
         return None
 
     try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+        for line in config_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

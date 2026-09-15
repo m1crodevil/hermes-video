@@ -136,8 +136,16 @@ def run_watch(
             print(f"[watch] scene detection failed: {exc}", file=sys.stderr)
             report.warnings.append(f"scene detection failed: {exc}")
 
-    # Stage 4: frame extraction (only if timestamps requested)
+    # Stage 4: frame extraction
     timestamps = _parse_timestamps(timestamps_str)
+    if video_path and not timestamps:
+        # Default to start, middle, end for visual summary when video is available.
+        duration = report.duration or 0.0
+        if duration > 0:
+            timestamps = [0.0, duration / 2, duration]
+        elif duration == 0.0:
+            timestamps = [0.0]
+
     if video_path and timestamps:
         try:
             report.frames = extract_frames(video_path, timestamps, out_dir / "frames", width=resolution)

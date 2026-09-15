@@ -51,6 +51,7 @@ watch-*/
 download/
 frames/
 !src/watch/frames/
+!skills/watch/scripts/frames/
 audio.mp3
 audio.wav
 

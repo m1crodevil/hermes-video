@@ -5,7 +5,7 @@
 If you discover a security vulnerability, please report it responsibly:
 
 1. **DO NOT** open a public GitHub issue
-2. Email: m1crodevil@users.noreply.github.com
+2. Open a private security advisory via the repository's Security tab
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce
@@ -75,6 +75,4 @@ This project adheres to:
 
 ## Contact
 
-For security concerns:
-- Email: m1crodevil@users.noreply.github.com
-- GitHub: [@m1crodevil](https://github.com/m1crodevil)
+For security concerns, open a private advisory via the repository's Security tab.

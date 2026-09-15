@@ -11,10 +11,11 @@ from watch.cli import main as watch_main
 
 def _run(clip: Path, *args: str) -> str:
     old_argv = sys.argv
+    old_stderr = sys.stderr
     try:
         sys.argv = ["watch", str(clip), "--no-whisper", *args]
         f = io.StringIO()
-        with contextlib.redirect_stdout(f):
+        with contextlib.redirect_stderr(f):
             try:
                 watch_main()
             except SystemExit as e:
@@ -23,6 +24,7 @@ def _run(clip: Path, *args: str) -> str:
         return f.getvalue()
     finally:
         sys.argv = old_argv
+        sys.stderr = old_stderr
 
 
 def test_timestamps_extract_cue_frames(cut_clip: Path):
